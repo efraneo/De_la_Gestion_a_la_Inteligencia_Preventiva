@@ -1,3 +1,5 @@
+import tempfile
+import time
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -345,17 +347,38 @@ else:
                 st.image(image, caption="Imagen Cargada para Análisis", use_column_width=True)
                 if st.button("👁️ Analizar Imagen con IA"):
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
+                        texto_analizar = ""
                         try:
-                            # Intentar con Google Gemini
-                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en ej.: mobiliario, eléctrico, humedad u obstáculo)."
-                            response = vision_model.generate_content([prompt_vision, image])
+                            # 1. Guardar la imagen en un archivo temporal físico (Esto evita errores de red)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                                tmp_file.write(uploaded_file.getvalue())
+                                tmp_file_path = tmp_file.name
+                            
+                            # 2. Subir el archivo a la API segura de Google
+                            genai_file = genai.upload_file(path=tmp_file_path, mime_type=uploaded_file.type)
+                            
+                            # 3. Esperar a que Google procese la imagen (Muy importante)
+                            while genai_file.state.name == "PROCESSING":
+                                time.sleep(2)
+                                genai_file = genai.get_file(genai_file.name)
+                            
+                            if genai_file.state.name == "FAILED":
+                                raise ValueError("Google no pudo procesar la imagen.")
+                            
+                            # 4. Enviar el archivo ya procesado al modelo
+                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
+                            response = vision_model.generate_content([prompt_vision, genai_file])
+                            
                             texto_analizar = response.text
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
                             
+                            # Limpiar archivo temporal
+                            os.remove(tmp_file_path)
+                                            
                         except Exception as e:
-                            # PLAN B: Si la IA de Google falla, no romper la app
-                            st.warning(f"⚠️ La IA de Visión no está disponible en este momento. Por favor, describe lo que ves en la imagen para continuar:")
-                            st.info("💡 *Tip: Escribe la condición subestándar que observas en la foto (Ej: Silla rota, cable expuesto, humedad...)*")
+                            # PLAN B: Si la IA falla, no romper la app
+                            st.warning(f"⚠️ La IA de Visión no está disponible. Por favor, describe lo que ves:")
+                            st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
                         # Si tenemos texto (sea de la IA o manual), procesamos y guardamos
