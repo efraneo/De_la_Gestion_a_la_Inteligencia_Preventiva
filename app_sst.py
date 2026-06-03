@@ -57,8 +57,22 @@ def save_to_supabase(tipo_input, descripcion, resultado, image_url=None):
 
 # --- NUEVA FUNCIÓN: LEER DE LA NUBE ---
 def load_historial_supabase():
-    response = supabase.table('historial_ia').select("*").order("fecha_analisis", desc=True).execute()
-    return pd.DataFrame(response.data)
+    try:
+        # Hacemos una consulta simple sin ordenar para evitar errores de sintaxis con Supabase
+        response = supabase.table('historial_ia').select("*").execute()
+        
+        # Convertimos a DataFrame
+        df = pd.DataFrame(response.data)
+        
+        # Si hay datos y la columna existe, ordenamos por fecha usando Pandas (más seguro)
+        if not df.empty and 'fecha_analisis' in df.columns:
+            df['fecha_analisis'] = pd.to_datetime(df['fecha_analisis'])
+            df = df.sort_values(by='fecha_analisis', ascending=False)
+            
+        return df
+    except Exception as e:
+        st.error(f"Error conectando a la base de datos: {e}")
+        return pd.DataFrame() # Devuelve tabla vacía para que la app no se caiga
 
 # ==========================================
 # APLICACIÓN PRINCIPAL (LOGUEADO)
