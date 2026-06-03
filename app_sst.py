@@ -378,6 +378,7 @@ else:
                         except Exception as e:
                             # PLAN B: Si la IA falla, no romper la app
                             st.warning(f"⚠️ La IA de Visión no está disponible. Por favor, describe lo que ves:")
+                            st.error(f"⚠️ ERROR REAL DE LA IA: {e}") # <--- ESTO NOS DIRÁ LA VERDAD
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
