@@ -37,7 +37,7 @@ try:
     
     supabase: Client = create_client(supabase_url, supabase_key)
     genai.configure(api_key=gemini_key)
-    vision_model = genai.GenerativeModel('gemini-1.5-flash')
+    vision_model = genai.GenerativeModel('gemini-1.5-flash-latest')
     CLOUD_CONNECTED = True
 except Exception as e:
     CLOUD_CONNECTED = False
