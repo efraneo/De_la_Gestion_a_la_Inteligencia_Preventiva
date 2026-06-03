@@ -5,3 +5,5 @@ openpyxl
 xlsxwriter
 Pillow
 bcrypt
+google-generativeai
+supabase
