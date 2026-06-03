@@ -37,7 +37,7 @@ try:
     
     supabase: Client = create_client(supabase_url, supabase_key)
     genai.configure(api_key=gemini_key)
-    vision_model = genai.GenerativeModel('gemini-pro-vision')
+    vision_model = genai.GenerativeModel('gemini-1.5-flash-latest')
     CLOUD_CONNECTED = True
 except Exception as e:
     CLOUD_CONNECTED = False
@@ -346,23 +346,33 @@ else:
                 if st.button("👁️ Analizar Imagen con IA"):
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         try:
-                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
+                            # Intentar con Google Gemini
+                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en ej.: mobiliario, eléctrico, humedad u obstáculo)."
                             response = vision_model.generate_content([prompt_vision, image])
                             texto_analizar = response.text
-                            st.info(f"📝 **La IA detectó:** {texto_analizar}")
+                            st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
                             
-                            # Subir imagen a Supabase Storage
-                            img_bytes = uploaded_file.getvalue()
-                            file_name = f"{uuid.uuid4().hex}.jpg"
-                            supabase.storage.from_("fotos-sst").upload(file_name, img_bytes, {"content-type": "image/jpeg"})
-                            image_url = supabase.storage.from_("fotos-sst").get_public_url(file_name)
-                            
-                            resultado = predict_sst_analysis(texto_analizar)
-                            save_to_supabase("Imagen", texto_analizar, resultado, image_url)
-                            st.session_state.resultado_ia = resultado
-                            st.rerun()
                         except Exception as e:
-                            st.error(f"Error procesando imagen: {e}")
+                            # PLAN B: Si la IA de Google falla, no romper la app
+                            st.warning(f"⚠️ La IA de Visión no está disponible en este momento. Por favor, describe lo que ves en la imagen para continuar:")
+                            st.info("💡 *Tip: Escribe la condición subestándar que observas en la foto (Ej: Silla rota, cable expuesto, humedad...)*")
+                            texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
+                        
+                        # Si tenemos texto (sea de la IA o manual), procesamos y guardamos
+                        if texto_analizar:
+                            try:
+                                # Subir imagen a Supabase Storage
+                                img_bytes = uploaded_file.getvalue()
+                                file_name = f"{uuid.uuid4().hex}.jpg"
+                                supabase.storage.from_("fotos-sst").upload(file_name, img_bytes, {"content-type": "image/jpeg"})
+                                image_url = supabase.storage.from_("fotos-sst").get_public_url(file_name)
+                                
+                                resultado = predict_sst_analysis(texto_analizar)
+                                save_to_supabase("Imagen", texto_analizar, resultado, image_url)
+                                st.session_state.resultado_ia = resultado
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error guardando en la nube: {e}")
 
         # --- RENDERIZADO DE RESULTADOS ---
         if 'resultado_ia' in st.session_state:
