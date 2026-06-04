@@ -487,4 +487,4 @@ else:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
                 return output.getvalue()
-            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name='Historial_IA_SST.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name='Historial_IA_SST.xlsx', mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
