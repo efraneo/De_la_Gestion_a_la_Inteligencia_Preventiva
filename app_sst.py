@@ -376,6 +376,7 @@ else:
                         except Exception as e:
                             # PLAN B: Si la IA falla, no romper la app
                             st.warning("⚠️ La IA de Visión no está disponible. Modo Colaborativo Activado:")
+                            st.error(f"🔴 ERROR REAL DE OPENAI: {e}") # <--- ESTA LÍNEA NOS DIRÁ LA VERDAD
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
