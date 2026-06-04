@@ -9,10 +9,11 @@ from PIL import Image
 import os
 import uuid
 import bcrypt
-import base64
-from openai import OpenAI
+import tempfile
+import time
+import json
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN DE PÁGINA (DEBE SER LO PRIMERO) ---
 st.set_page_config(page_title="Inteligencia Preventiva SST", page_icon="🛡️", layout="wide")
 
 # --- ESTILOS CSS PRO ---
@@ -27,16 +28,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN A LA NUBE (SUPABASE Y OPENAI) ---
+# --- CONEXIÓN A LA NUBE (SUPABASE Y GEMINI) ---
 try:
     supabase_url = st.secrets["SUPABASE_URL"].rstrip('/')
     supabase_key = st.secrets["SUPABASE_KEY"]
-    openai_key = st.secrets["GEMINI_API_KEY"] # Usamos la misma variable en Secrets, pero ahora es clave de OpenAI (sk-...)
+    gemini_key = st.secrets["GEMINI_API_KEY"] # DEBE EMPEZAR CON AIzaSy...
     
     from supabase import create_client, Client
+    import google.generativeai as genai
     
     supabase: Client = create_client(supabase_url, supabase_key)
-    client_openai = OpenAI(api_key=openai_key)
+    genai.configure(api_key=gemini_key)
+    vision_model = genai.GenerativeModel('gemini-1.5-flash-latest')
     CLOUD_CONNECTED = True
 except Exception as e:
     CLOUD_CONNECTED = False
@@ -102,58 +105,93 @@ def verify_user(correo, clave, current_ip):
         return user_data, "OK"
     return None, "❌ Usuario o clave incorrectos."
 
-# --- MOTOR DE IA PREDICTIVA (NTC 3701) ---
+# --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL CON GEMINI) ---
 def predict_sst_analysis(texto_hallazgo):
-    texto = texto_hallazgo.lower()
-    if any(palabra in texto for palabra in ["silla", "mobiliario", "escritorio", "cama", "colchón"]):
-        categoria = "Mobiliario / Ergonomía"
-        analisis = {
-            "categoria": categoria, "evento": texto_hallazgo.capitalize(),
-            "porques": ["¿Por qué ocurrió? -> Porque el elemento/mobiliario cedió o presentó falla estructural.", "¿Por qué cedió? -> Porque presentaba una condición subestándar o falla estructural.", "¿Por qué no fue detectada? -> Porque no se identificó oportunamente el deterioro o inestabilidad.", "¿Por qué no se identificó? -> Porque existen debilidades en las inspecciones locativas y de mobiliario.", "¿Por qué existen debilidades? -> Porque no se cuenta con un control efectivo para mantenimiento preventivo y reposición."],
-            "causa_raiz": "Falla estructural o condición subestándar del mobiliario, asociada a deficiencias en la inspección, mantenimiento y control preventivo.",
-            "actos_sub": ["550 – ADOPTAR UNA POSICIÓN INSEGURA", "559 – Adoptar posición insegura no especificada"],
-            "condiciones_sub": ["000 – DEFECTO AGENTES / 035 – Desgastado, roto", "500 – INADECUADAMENTE PROTEGIDO / 520 – Inadecuadamente protegido (riesgos mecánicos)"],
-            "factores_personales": ["998 – Ningún factor personal relevante"],
-            "factores_trabajo": ["300 – MANTENIMIENTO DEFICIENTE / 301 – Aspectos preventivos inadecuados", "000 – SUPERVISIÓN DEFICIENTE / 009 – Identificación y evaluación deficiente"],
-            "acciones": [
-                {"titulo": "Inspección general de mobiliario", "objetivo": "Identificar y retirar elementos deteriorados.", "actividades": "Inspección física\nClasificación de estado\nRetiro inmediato", "responsable": "Infraestructura + SST", "frecuencia": "Mensual"},
-                {"titulo": "Programa de mantenimiento preventivo", "objetivo": "Garantir condiciones seguras de uso.", "actividades": "Cronograma de mantenimiento\nReparación o reposición", "responsable": "Mantenimiento", "frecuencia": "Trimestral"}
-            ],
-            "conclusion": "Evento asociado a falla de mobiliario. Evidencia condición subestándar principal y mantenimiento deficiente. Factor predominante: Locativo y Organizacional."
+    prompt_ia = f"""
+    Actúa como un Auditor Experto en Seguridad y Salud en el Trabajo (SST), especialista en la normativa NTC 3701 y en la metodología de los 5 Por Qué.
+
+    Analiza el siguiente evento o condición subestándar reportado en una empresa: "{texto_hallazgo}"
+
+    Tu tarea es realizar una investigación exhaustiva y generar un análisis estructurado. Debes seguir EXACTAMENTE este formato JSON. No agregues texto fuera del JSON.
+    Asegúrate de utilizar códigos y terminología real de la NTC 3701 para las causas inmediatas y básicas.
+
+    {{
+      "categoria": "Clasificación principal del riesgo (Ej: Riesgo Eléctrico, Mobiliario/Ergonomía, Infraestructura/Locativo, Biológico, Mecánico, etc.)",
+      "evento": "Descripción capitalizada y profesional del evento proporcionado",
+      "porques": [
+        "¿Por qué ocurrió el evento? -> [Respuesta lógica basada en el evento]",
+        "¿Por qué sucedió la respuesta anterior? -> [Profundización]",
+        "¿Por qué se generó esa situación? -> [Profundización en gestión]",
+        "¿Por qué no se detectó o previno? -> [Falla en el sistema de control]",
+        "¿Por qué existe esa falla en el sistema? -> [Causa raíz organizacional]"
+      ],
+      "causa_raiz": "Enunciado claro y conciso de la causa raíz identificada tras el análisis de los 5 Por Qué.",
+      "actos_sub": ["Código y nombre real de NTC 3701 de Actos subestándar aplicables (Ej: 550 - Adoptar posición insegura)"],
+      "condiciones_sub": ["Código y nombre real de NTC 3701 de Condiciones subestándar aplicables (Ej: 035 - Desgastado, roto; 510 - Riesgo eléctrico)"],
+      "factores_personales": ["Código y nombre real de NTC 3701 (Ej: 998 - Ningún factor personal relevante, o el que aplique)"],
+      "factores_trabajo": ["Código y nombre real de NTC 3701 (Ej: 300 - Mantenimiento deficiente; 000 - Supervisión deficiente)"],
+      "acciones": [
+        {{
+          "titulo": "Nombre de la acción correctiva o preventiva",
+          "objetivo": "Qué se busca lograr con esta acción",
+          "actividades": "Paso a paso de la actividad (separado por saltos de línea \\n)",
+          "responsable": "Área o rol responsable",
+          "frecuencia": "Frecuencia de ejecución (Ej: Inmediata, Mensual, Trimestral)"
+        }},
+        {{
+          "titulo": "Nombre de la segunda acción (preventiva)",
+          "objetivo": "Qué se busca lograr",
+          "actividades": "Paso a paso",
+          "responsable": "Área o rol",
+          "frecuencia": "Frecuencia"
+        }}
+      ],
+      "conclusion": "Conclusión técnica profesional que relaciona el evento con la causa raíz y el factor predominante (Organizacional, Humano, Técnico)."
+    }}
+
+    Genera SOLO el JSON válido.
+    """
+
+    try:
+        response = vision_model.generate_content(prompt_ia)
+        text_response = response.text.strip()
+        
+        # Limpiar formato Markdown si la IA lo añade
+        if text_response.startswith("```json"):
+            text_response = text_response[7:]
+        if text_response.startswith("```"):
+            text_response = text_response[3:]
+        if text_response.endswith("```"):
+            text_response = text_response[:-3]
+            
+        analisis = json.loads(text_response.strip())
+        
+        # Asegurar que las claves existan
+        keys_requeridas = ["categoria", "evento", "porques", "causa_raiz", "actos_sub", "condiciones_sub", "factores_personales", "factores_trabajo", "acciones", "conclusion"]
+        for key in keys_requeridas:
+            if key not in analisis:
+                if key == "acciones":
+                    analisis[key] = [{"titulo": "Acción pendiente", "objetivo": "Pendiente", "actividades": "Pendiente", "responsable": "SST", "frecuencia": "Pendiente"}]
+                elif isinstance(analisis.get(key), list):
+                    analisis[key] = ["Pendiente por IA"]
+                else:
+                    analisis[key] = "Pendiente por IA"
+                    
+        return analisis
+
+    except Exception as e:
+        return {
+            "categoria": "Error de Procesamiento IA",
+            "evento": texto_hallazgo.capitalize(),
+            "porques": ["No se pudo completar el análisis profundo en este momento."],
+            "causa_raiz": f"Error al interpretar la respuesta de la IA: {e}",
+            "actos_sub": ["N/A"],
+            "condiciones_sub": ["N/A"],
+            "factores_personales": ["N/A"],
+            "factores_trabajo": ["N/A"],
+            "acciones": [{"titulo": "Reintentar", "objetivo": "Generar el análisis nuevamente", "actividades": "Intente de nuevo más tarde", "responsable": "SST", "frecuencia": "Inmediata"}],
+            "conclusion": "La IA no pudo procesar la solicitud en formato JSON."
         }
-    elif any(palabra in texto for palabra in ["cable", "eléctric", "toma", "enchufe", "tablero", "energía"]):
-        categoria = "Riesgo Eléctrico"
-        analisis = {
-            "categoria": categoria, "evento": texto_hallazgo.capitalize(),
-            "porques": ["¿Por qué ocurrió? -> Porque se presentó exposición a riesgo eléctrico por elemento sin protección.", "¿Por qué sin protección? -> Porque el aislamiento estaba deteriorado o nunca se instaló.", "¿Por qué estaba deteriorado? -> Por desgaste por uso o modificación inadecuada sin reporte.", "¿Por qué no se reportó? -> Porque las inspecciones no auditan riesgos eléctricos menores.", "¿Por qué no auditan? -> Porque no existe una lista de chequeo específica para sistemas eléctricos."],
-            "causa_raiz": "Exposición a riesgo eléctrico por deficiencias en el control de infraestructura y ausencia de auditorías preventivas.",
-            "actos_sub": ["550 – ADOPTAR UNA POSICIÓN INSEGURA (Acercamiento a zona energizada)"],
-            "condiciones_sub": ["000 – DEFECTO AGENTES / 035 – Desgastado, roto (Aislamiento)", "500 – INADECUADAMENTE PROTEGIDO / 510 – Riesgo eléctrico"],
-            "factores_personales": ["998 – Ningún factor personal relevante"],
-            "factores_trabajo": ["300 – MANTENIMIENTO DEFICIENTE / 301 – Aspectos preventivos inadecuados", "000 – SUPERVISIÓN DEFICIENTE / 009 – Identificación deficiente"],
-            "acciones": [
-                {"titulo": "Aislamiento y señalización inmediata", "objetivo": "Eliminar riesgo eléctrico.", "actividades": "Desenergización\nInstalación de aislamiento\nSeñalización", "responsable": "Mantenimiento + SST", "frecuencia": "Inmediata"},
-                {"titulo": "Actualización de listas de chequeo", "objetivo": "Incluir ítems de riesgo eléctrico.", "actividades": "Modificación de formato\nSocialización", "responsable": "SST", "frecuencia": "Única"}
-            ],
-            "conclusion": "Condición subestándar de tipo eléctrico. Causa raíz: Falta de mantenimiento preventivo y ausencia de verificación. Factor predominante: Organizacional."
-        }
-    else:
-        categoria = "Infraestructura / General"
-        analisis = {
-            "categoria": categoria, "evento": texto_hallazgo.capitalize(),
-            "porques": ["¿Por qué se presenta la condición? -> Porque hay deterioro en la infraestructura física.", "¿Por qué hay deterioro? -> Por desgaste natural o fallas en materiales.", "¿Por qué no se ha reparado? -> Porque no se ha generado una orden de mantenimiento oportuna.", "¿Por qué no hay orden oportuna? -> Porque el reporte del hallazgo se retrasa.", "¿Por qué no hay seguimiento? -> Porque los registros no están integrados a un plan automatizado."],
-            "causa_raiz": "Condición subestándar generada por la desintegración entre la detección del hallazgo y la gestión de mantenimiento.",
-            "actos_sub": ["550 – ADOPTAR UNA POSICIÓN INSEGURA (Si aplica interacción)"],
-            "condiciones_sub": ["000 – DEFECTO AGENTES / 035 – Desgastado, roto", "400 – RIESGO DE COLOCACIÓN / 420 – Emplazados inadecuadamente"],
-            "factores_personales": ["998 – Ningún factor personal relevante"],
-            "factores_trabajo": ["300 – MANTENIMIENTO DEFICIENTE / 301 – Aspectos preventivos inadecuados", "000 – SUPERVISIÓN DEFICIENTE / 009 – Identificación deficiente"],
-            "acciones": [
-                {"titulo": "Intervención correctiva inmediata", "objetivo": "Restaurar condiciones seguras.", "actividades": "Evaluación del daño\nReparación\nVerificación", "responsable": "Mantenimiento", "frecuencia": "Inmediata"},
-                {"titulo": "Cronograma de mantenimiento locativo", "objetivo": "Prevenir deterioro.", "actividades": "Inclusión en software\nInspecciones programadas", "responsable": "Infraestructura + SST", "frecuencia": "Trimestral"}
-            ],
-            "conclusion": "Condición subestándar asociada a infraestructura física. Factor predominante: Organizacional."
-        }
-    return analisis
 
 # --- FUNCIONES SUPABASE ---
 def save_to_supabase(tipo_input, descripcion, resultado, image_url=None):
@@ -162,9 +200,9 @@ def save_to_supabase(tipo_input, descripcion, resultado, image_url=None):
             data = {
                 "tipo_input": tipo_input,
                 "descripcion": descripcion,
-                "categoria_detectada": resultado['categoria'],
-                "causa_raiz": resultado['causa_raiz'],
-                "conclusion": resultado['conclusion'],
+                "categoria_detectada": resultado.get('categoria', 'N/A'),
+                "causa_raiz": resultado.get('causa_raiz', 'N/A'),
+                "conclusion": resultado.get('conclusion', 'N/A'),
                 "image_url": image_url
             }
             supabase.table('historial_ia').insert(data).execute()
@@ -211,8 +249,8 @@ if not st.session_state.authenticated:
             if st.form_submit_button("Registrarse"):
                 if cedula and nombre and correo and clave:
                     success = register_user(cedula, nombre, str(fecha_nac), correo, celular, clave, current_ip)
-                    if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión. Tu prueba de 3 días comienza ahora.")
-                    else: st.error("⚠️ Ya se encuentra registrado y debe obtener el programa completo, contactar al administrador.")
+                    if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión.")
+                    else: st.error("⚠️ Ya se encuentra registrado. Contacte al administrador.")
                 else: st.warning("Todos los campos son obligatorios.")
     else:
         correo = st.text_input("Usuario (Correo)")
@@ -330,12 +368,13 @@ else:
         texto_analizar = ""
 
         if input_type == "📝 Escribir Texto":
-            texto_analizar = st.text_area("Describa el evento o condición subestándar:", height=150, placeholder="Ej: Caída al mismo nivel por colapso de silla...")
+            texto_analizar = st.text_area("Describa el evento o condición subestándar:", height=150, placeholder="Ej: Derrame de químico en el pasillo...")
             if st.button("🧠 Generar Investigación") and texto_analizar:
-                resultado = predict_sst_analysis(texto_analizar)
-                save_to_supabase("Texto", texto_analizar, resultado)
-                st.session_state.resultado_ia = resultado
-                st.rerun()
+                with st.spinner("Gemini está analizando el evento y aplicando NTC 3701..."):
+                    resultado = predict_sst_analysis(texto_analizar)
+                    save_to_supabase("Texto", texto_analizar, resultado)
+                    st.session_state.resultado_ia = resultado
+                    st.rerun()
 
         elif input_type == "📷 Subir Imagen (IA Vision)":
             uploaded_file = st.file_uploader("Toma o sube una foto del acto/condición subestándar", type=['png', 'jpg', 'jpeg'])
@@ -346,97 +385,95 @@ else:
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         texto_analizar = ""
                         try:
-                            # Convertir imagen a base64 para OpenAI
-                            img_base64 = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+                            # 1. Guardar imagen temporalmente
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                                tmp_file.write(uploaded_file.getvalue())
+                                tmp_file_path = tmp_file.name
                             
-                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
+                            # 2. Subir a la API oficial de Google
+                            genai_file = genai.upload_file(path=tmp_file_path, mime_type=uploaded_file.type)
                             
-                            # Llamada a OpenAI GPT-4o-mini
-                            response = client_openai.chat.completions.create(
-                              model="gpt-4o-mini",
-                              messages=[
-                                {
-                                  "role": "user",
-                                  "content": [
-                                    {"type": "text", "text": prompt_vision},
-                                    {
-                                      "type": "image_url",
-                                      "image_url": {
-                                        "url": f"data:image/jpeg;base64,{img_base64}"
-                                      }
-                                    },
-                                  ]
-                                }
-                              ],
-                              max_tokens=100,
-                            )
-                            texto_analizar = response.choices[0].message.content
+                            # 3. Esperar procesamiento
+                            while genai_file.state.name == "PROCESSING":
+                                time.sleep(2)
+                                genai_file = genai.get_file(genai_file.name)
+                            
+                            if genai_file.state.name == "FAILED":
+                                raise ValueError("Google no pudo procesar la imagen.")
+                            
+                            # 4. Extraer texto de la imagen
+                            prompt_vision = "Eres un experto en SST. Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves."
+                            response_vision = vision_model.generate_content([prompt_vision, genai_file])
+                            texto_analizar = response_vision.text
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
+                            os.remove(tmp_file_path)
                                             
                         except Exception as e:
-                            # PLAN B: Si la IA falla, no romper la app
+                            # PLAN B: Modo Colaborativo
                             st.warning("⚠️ La IA de Visión no está disponible. Modo Colaborativo Activado:")
-                            st.error(f"🔴 ERROR REAL DE OPENAI: {e}") # <--- ESTA LÍNEA NOS DIRÁ LA VERDAD
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
-                        # Si tenemos texto (sea de la IA o manual), procesamos y guardamos
+                        # Si tenemos texto, procesamos con el Motor NTC 3701 y guardamos
                         if texto_analizar:
-                            try:
-                                # Subir imagen a Supabase Storage
-                                img_bytes = uploaded_file.getvalue()
-                                file_name = f"{uuid.uuid4().hex}.jpg"
-                                supabase.storage.from_("fotos-sst").upload(file_name, img_bytes, {"content-type": "image/jpeg"})
-                                image_url = supabase.storage.from_("fotos-sst").get_public_url(file_name)
-                                
+                            with st.spinner("Generando análisis de causa raíz NTC 3701..."):
                                 resultado = predict_sst_analysis(texto_analizar)
-                                save_to_supabase("Imagen", texto_analizar, resultado, image_url)
-                                st.session_state.resultado_ia = resultado
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error guardando en la nube: {e}")
+                                try:
+                                    img_bytes = uploaded_file.getvalue()
+                                    file_name = f"{uuid.uuid4().hex}.jpg"
+                                    supabase.storage.from_("fotos-sst").upload(file_name, img_bytes, {"content-type": "image/jpeg"})
+                                    image_url = supabase.storage.from_("fotos-sst").get_public_url(file_name)
+                                    
+                                    save_to_supabase("Imagen", texto_analizar, resultado, image_url)
+                                    st.session_state.resultado_ia = resultado
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error guardando en la nube: {e}")
 
         # --- RENDERIZADO DE RESULTADOS ---
         if 'resultado_ia' in st.session_state:
             resultado = st.session_state.resultado_ia
             st.success("✅ Análisis Generado y Guardado en la Nube!")
+            
             st.markdown("## 1. Análisis de causas – Método de los Cinco Por Qué")
-            st.markdown(f"**Evento**\n\n{resultado['evento']}")
-            for p in resultado['porques']: st.markdown(f"**{p}**")
-            st.error(f"**Causa raíz identificada:** {resultado['causa_raiz']}")
+            st.markdown(f"**Evento:** {resultado.get('evento', 'N/A')}")
+            porques = resultado.get('porques', [])
+            for p in porques: 
+                if p and p != "Pendiente por IA": st.markdown(f"**{p}**")
+            st.error(f"**Causa raíz identificada:** {resultado.get('causa_raiz', 'N/A')}")
             st.markdown("---")
             
             st.markdown("## 2. Causas inmediatas (NTC 3701)")
             col_acto, col_cond = st.columns(2)
             with col_acto:
                 st.markdown("🔴 **Actos subestándar**")
-                for a in resultado['actos_sub']: st.markdown(f"- {a}")
+                for a in resultado.get('actos_sub', []): st.markdown(f"- {a}")
             with col_cond:
                 st.markdown("🟠 **Condiciones subestándar**")
-                for c in resultado['condiciones_sub']: st.markdown(f"- {c}")
+                for c in resultado.get('condiciones_sub', []): st.markdown(f"- {c}")
             st.markdown("---")
 
             st.markdown("## 3. Causas básicas (NTC 3701)")
             col_fp, col_ft = st.columns(2)
             with col_fp:
                 st.markdown("🔵 **Factores personales**")
-                for fp in resultado['factores_personales']: st.info(f"📌 {fp}")
+                for fp in resultado.get('factores_personales', []): st.info(f"📌 {fp}")
             with col_ft:
                 st.markdown("🟣 **Factores del trabajo**")
-                for ft in resultado['factores_trabajo']: st.warning(f"⚠️ {ft}")
+                for ft in resultado.get('factores_trabajo', []): st.warning(f"⚠️ {ft}")
             st.markdown("---")
 
             st.markdown("## 4. Plan de acción")
-            for i, acc in enumerate(resultado['acciones']):
-                with st.expander(f"✅ Acción {i+1}: {acc['titulo']}"):
+            for i, acc in enumerate(resultado.get('acciones', [])):
+                with st.expander(f"✅ Acción {i+1}: {acc.get('titulo', 'Acción')}"):
                     col_obj, col_freq = st.columns(2)
-                    col_obj.markdown(f"**Objetivo**\n\n{acc['objetivo']}")
-                    col_freq.markdown(f"**Frecuencia:** {acc['frecuencia']}\n\n**Responsable:** {acc['responsable']}")
-                    st.markdown(f"**Actividades**\n\n{acc['actividades']}")
+                    col_obj.markdown(f"**Objetivo**\n\n{acc.get('objetivo', 'N/A')}")
+                    col_freq.markdown(f"**Frecuencia:** {acc.get('frecuencia', 'N/A')}\n\n**Responsable:** {acc.get('responsable', 'N/A')}")
+                    st.markdown(f"**Actividades**\n\n{acc.get('actividades', 'N/A')}")
             st.markdown("---")
 
             st.markdown("## 5. Conclusión técnica")
-            st.success(f"✔️ {resultado['conclusion']}")
+            st.success(f"✔️ {resultado.get('conclusion', 'N/A')}")
 
     # --- EXPORTAR DATOS ---
     elif menu == "📁 Exportar Datos":
@@ -450,4 +487,4 @@ else:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
                 return output.getvalue()
-            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name='Historial_IA_SST.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name='Historial_IA_SST.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

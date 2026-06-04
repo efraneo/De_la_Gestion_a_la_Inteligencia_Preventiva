@@ -6,4 +6,4 @@ xlsxwriter
 Pillow
 bcrypt
 supabase
-openai
+google-generativeai
