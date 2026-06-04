@@ -1,5 +1,3 @@
-import tempfile
-import time
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -11,6 +9,8 @@ from PIL import Image
 import os
 import uuid
 import bcrypt
+import base64
+from openai import OpenAI
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Inteligencia Preventiva SST", page_icon="🛡️", layout="wide")
@@ -27,19 +27,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN A LA NUBE (SUPABASE Y GEMINI) ---
+# --- CONEXIÓN A LA NUBE (SUPABASE Y OPENAI) ---
 try:
-    # Validar que no tenga barra al final para evitar error PGRST125
     supabase_url = st.secrets["SUPABASE_URL"].rstrip('/')
     supabase_key = st.secrets["SUPABASE_KEY"]
-    gemini_key = st.secrets["GEMINI_API_KEY"]
+    openai_key = st.secrets["GEMINI_API_KEY"] # Usamos la misma variable en Secrets, pero ahora es clave de OpenAI (sk-...)
     
     from supabase import create_client, Client
-    import google.generativeai as genai
     
     supabase: Client = create_client(supabase_url, supabase_key)
-    genai.configure(api_key=gemini_key)
-    vision_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    client_openai = OpenAI(api_key=openai_key)
     CLOUD_CONNECTED = True
 except Exception as e:
     CLOUD_CONNECTED = False
@@ -349,36 +346,36 @@ else:
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         texto_analizar = ""
                         try:
-                            # 1. Guardar la imagen en un archivo temporal físico (Esto evita errores de red)
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                                tmp_file.write(uploaded_file.getvalue())
-                                tmp_file_path = tmp_file.name
+                            # Convertir imagen a base64 para OpenAI
+                            img_base64 = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
                             
-                            # 2. Subir el archivo a la API segura de Google
-                            genai_file = genai.upload_file(path=tmp_file_path, mime_type=uploaded_file.type)
-                            
-                            # 3. Esperar a que Google procese la imagen (Muy importante)
-                            while genai_file.state.name == "PROCESSING":
-                                time.sleep(2)
-                                genai_file = genai.get_file(genai_file.name)
-                            
-                            if genai_file.state.name == "FAILED":
-                                raise ValueError("Google no pudo procesar la imagen.")
-                            
-                            # 4. Enviar el archivo ya procesado al modelo
                             prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
-                            response = vision_model.generate_content([prompt_vision, genai_file])
                             
-                            texto_analizar = response.text
+                            # Llamada a OpenAI GPT-4o-mini
+                            response = client_openai.chat.completions.create(
+                              model="gpt-4o-mini",
+                              messages=[
+                                {
+                                  "role": "user",
+                                  "content": [
+                                    {"type": "text", "text": prompt_vision},
+                                    {
+                                      "type": "image_url",
+                                      "image_url": {
+                                        "url": f"data:image/jpeg;base64,{img_base64}"
+                                      }
+                                    },
+                                  ]
+                                }
+                              ],
+                              max_tokens=100,
+                            )
+                            texto_analizar = response.choices[0].message.content
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
-                            
-                            # Limpiar archivo temporal
-                            os.remove(tmp_file_path)
                                             
                         except Exception as e:
                             # PLAN B: Si la IA falla, no romper la app
-                            st.warning(f"⚠️ La IA de Visión no está disponible. Por favor, describe lo que ves:")
-                            st.error(f"⚠️ ERROR REAL DE LA IA: {e}") # <--- ESTO NOS DIRÁ LA VERDAD
+                            st.warning("⚠️ La IA de Visión no está disponible. Modo Colaborativo Activado:")
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
