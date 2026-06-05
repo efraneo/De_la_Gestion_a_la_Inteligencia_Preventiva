@@ -401,7 +401,7 @@ else:
                                         ]
                                     }
                                 ],
-                                model="llama-3.2-11b-vision-preview",
+                                model="llama-3.2-90b-vision-preview",
                             )
                             texto_analizar = chat_completion.choices[0].message.content
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
