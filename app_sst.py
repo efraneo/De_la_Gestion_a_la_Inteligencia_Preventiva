@@ -370,6 +370,8 @@ else:
         if input_type == "📝 Escribir Texto":
             texto_analizar = st.text_area("Describa el evento o condición subestándar:", height=150, placeholder="Ej: Derrame de químico en el pasillo...")
             if st.button("🧠 Generar Investigación") and texto_analizar:
+                if 'resultado_ia' in st.session_state: # LIMPIA ANÁLISIS ANTERIOR
+                    del st.session_state.resultado_ia  
                 with st.spinner("Gemini está analizando el evento y aplicando NTC 3701..."):
                     resultado = predict_sst_analysis(texto_analizar)
                     save_to_supabase("Texto", texto_analizar, resultado)
@@ -382,6 +384,8 @@ else:
                 image = Image.open(uploaded_file)
                 st.image(image, caption="Imagen Cargada para Análisis", use_column_width=True)
                 if st.button("👁️ Analizar Imagen con IA"):
+                    if 'resultado_ia' in st.session_state: # LIMPIA ANÁLISIS ANTERIOR
+                        del st.session_state.resultado_ia  
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         texto_analizar = ""
                         try:
@@ -433,6 +437,15 @@ else:
         # --- RENDERIZADO DE RESULTADOS ---
         if 'resultado_ia' in st.session_state:
             resultado = st.session_state.resultado_ia
+            
+            # Botón para limpiar manualmente la pantalla
+            st.markdown("---")
+            col_limpiar, col_spacer = st.columns([1, 5])
+            with col_limpiar:
+                if st.button("🔄 Limpiar Análisis / Nuevo Hallazgo"):
+                    del st.session_state.resultado_ia
+                    st.rerun()
+                    
             st.success("✅ Análisis Generado y Guardado en la Nube!")
             
             st.markdown("## 1. Análisis de causas – Método de los Cinco Por Qué")
