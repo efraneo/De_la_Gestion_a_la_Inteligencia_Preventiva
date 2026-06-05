@@ -235,7 +235,7 @@ if not st.session_state.authenticated:
             st.markdown("### Crear Cuenta (Prueba Gratuita 3 Días)")
             cedula = st.text_input("Número de Cédula")
             nombre = st.text_input("Nombres Completos")
-            fecha_nac = st.date_input("Fecha de Nacimiento")
+            fecha_nac = st.date_input("Fecha de Nacimiento", min_value=datetime(1950, 1, 1).date(), max_value=datetime.now().date(), value=datetime(1990, 1, 1).date())
             correo = st.text_input("Correo Electrónico (Será tu usuario)")
             celular = st.text_input("Celular")
             clave = st.text_input("Clave", type="password")
