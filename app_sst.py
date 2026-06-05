@@ -481,6 +481,98 @@ else:
             st.markdown("## 5. Conclusión técnica")
             st.success(f"✔️ {resultado.get('conclusion', 'N/A')}")
 
+# --- Nuevas filas
+            st.markdown("---")
+            st.markdown("## 6. Cierre de Ciclo: Matriz y Notificación")
+            st.markdown("Automatización del seguimiento del plan de acción y actualización de registros en el ecosistema integrado.")
+            
+            col_matrix, col_email = st.columns(2)
+            
+            with col_matrix:
+                st.subheader("📊 Registro en Matriz de Mejora")
+                st.write("Simulación de actualización automática en la base de datos del SGSST:")
+                
+                # Extraer responsables y fechas del plan de acción
+                acciones = resultado.get('acciones', [])
+                responsables = [acc.get('responsable', 'N/A') for acc in acciones]
+                frecuencias = [acc.get('frecuencia', 'N/A') for acc in acciones]
+                
+                # Calcular fecha proyectada basada en la frecuencia
+                fecha_registro = datetime.now()
+                fecha_cierre_proyectada = "N/A"
+                if frecuencias:
+                    freq = frecuencias[0]
+                    if "Inmediata" in freq: fecha_cierre_proyectada = (fecha_registro + timedelta(days=3)).strftime('%Y-%m-%d')
+                    elif "Mensual" in freq: fecha_cierre_proyectada = (fecha_registro + timedelta(days=30)).strftime('%Y-%m-%d')
+                    elif "Trimestral" in freq: fecha_cierre_proyectada = (fecha_registro + timedelta(days=90)).strftime('%Y-%m-%d')
+                    else: fecha_cierre_proyectada = (fecha_registro + timedelta(days=15)).strftime('%Y-%m-%d')
+
+                # Crear la fila simulada de la Matriz
+                nueva_fila = pd.DataFrame({
+                    'ID Hallazgo': [f"HLL-{uuid.uuid4().hex[:4].upper()}"],
+                    'Fecha_Registro': [fecha_registro.strftime('%Y-%m-%d')],
+                    'Condición_Subestándar': [resultado.get('evento', 'N/A')],
+                    'Causa_Raíz': [resultado.get('causa_raiz', 'N/A')],
+                    'Plan_Acción': [acciones[0].get('titulo', 'N/A') if acciones else 'N/A'],
+                    'Responsable': [responsables[0] if responsables else 'N/A'],
+                    'Estado': ['Abierto >> En Proceso'],
+                    'Fecha_Cierre_Proyectada': [fecha_cierre_proyectada]
+                })
+                
+                st.dataframe(nueva_fila, use_container_width=True, hide_index=True)
+                
+                # Botón para descargar la actualización
+                def to_excel_update(df):
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False, sheet_name='Matriz_Mejora_Actualizada')
+                    return output.getvalue()
+                
+                st.download_button(
+                    label="📥 Descargar Registro para Matriz",
+                    data=to_excel_update(nueva_fila),
+                    file_name="Matriz_Mejora_Actualizada.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            with col_email:
+                st.subheader("📧 Notificación al Responsable")
+                st.write("Simulación de envío automático de seguimiento:")
+                
+                destinatario = responsables[0] if responsables else "responsable@empresa.com"
+                asunto = f"ALERTA SST: Plan de Acción Requerido - Hallazgo {resultado.get('categoria', 'SST')}"
+                
+                cuerpo = f"""
+                **De:** sistema.sst@inteligencia-preventiva.com  
+                **Para:** {destinatario}  
+                **Asunto:** {asunto}  
+                **Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M)}  
+                
+                ---  
+                Estimado/a,  
+                
+                Se ha identificado una condición subestándar que requiere su atención inmediata:  
+                
+                🔴 **Evento:** {resultado.get('evento', 'N/A')}  
+                🎯 **Causa Raíz:** {resultado.get('causa_raiz', 'N/A')}  
+                📋 **Plan de Acción Asignado:** {acciones[0].get('titulo', 'N/A') if acciones else 'N/A'}  
+                ⏳ **Frecuencia:** {frecuencias[0] if frecuencias else 'N/A'}  
+                📅 **Fecha Cierre Proyectada:** {fecha_cierre_proyectada}  
+                
+                Por favor, actualice el estado en la Matriz de Mejora una vez ejecutadas las actividades.  
+                
+                Atentamente,  
+                🛡️ Ecosistema Intel. Preventiva SST
+                """
+                
+                # Botón para simular envío
+                if st.button("📧 Simular Envío de Correo"):
+                    with st.spinner("Enviando notificación al responsable..."):
+                        import time
+                        time.sleep(1.5)  # Simular tiempo de envío
+                        st.success("✅ Correo simulado enviado exitosamente!")
+                
+                # Mostrar vista
+
     # --- EXPORTAR DATOS ---
     elif menu == "📁 Exportar Datos":
         st.title("📥 Exportación de Información Estratégica")
