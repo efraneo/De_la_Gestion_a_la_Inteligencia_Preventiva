@@ -9,9 +9,8 @@ from PIL import Image
 import os
 import uuid
 import bcrypt
-import tempfile
-import time
 import json
+import base64
 
 # --- CONFIGURACIÓN DE PÁGINA (DEBE SER LO PRIMERO) ---
 st.set_page_config(page_title="Inteligencia Preventiva SST", page_icon="🛡️", layout="wide")
@@ -28,18 +27,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN A LA NUBE (SUPABASE Y GEMINI) ---
+# --- CONEXIÓN A LA NUBE (SUPABASE Y GROQ IA) ---
 try:
     supabase_url = st.secrets["SUPABASE_URL"].rstrip('/')
     supabase_key = st.secrets["SUPABASE_KEY"]
-    gemini_key = st.secrets["GEMINI_API_KEY"] # DEBE EMPEZAR CON AIzaSy...
+    groq_key = st.secrets["GROQ_API_KEY"] 
     
     from supabase import create_client, Client
-    import google.generativeai as genai
+    from groq import Groq
     
     supabase: Client = create_client(supabase_url, supabase_key)
-    genai.configure(api_key=gemini_key)
-    vision_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    client_groq = Groq(api_key=groq_key)
     CLOUD_CONNECTED = True
 except Exception as e:
     CLOUD_CONNECTED = False
@@ -105,7 +103,7 @@ def verify_user(correo, clave, current_ip):
         return user_data, "OK"
     return None, "❌ Usuario o clave incorrectos."
 
-# --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL CON GEMINI) ---
+# --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL CON GROQ) ---
 def predict_sst_analysis(texto_hallazgo):
     prompt_ia = f"""
     Actúa como un Auditor Experto en Seguridad y Salud en el Trabajo (SST), especialista en la normativa NTC 3701 y en la metodología de los 5 Por Qué.
@@ -149,24 +147,19 @@ def predict_sst_analysis(texto_hallazgo):
       "conclusion": "Conclusión técnica profesional que relaciona el evento con la causa raíz y el factor predominante (Organizacional, Humano, Técnico)."
     }}
 
-    Genera SOLO el JSON válido.
+    Genera SOLO un objeto JSON válido y nada más.
     """
 
     try:
-        response = vision_model.generate_content(prompt_ia)
-        text_response = response.text.strip()
+        chat_completion = client_groq.chat.completions.create(
+            messages=[{"role": "user", "content": prompt_ia}],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+        text_response = chat_completion.choices[0].message.content.strip()
+        analisis = json.loads(text_response)
         
-        # Limpiar formato Markdown si la IA lo añade
-        if text_response.startswith("```json"):
-            text_response = text_response[7:]
-        if text_response.startswith("```"):
-            text_response = text_response[3:]
-        if text_response.endswith("```"):
-            text_response = text_response[:-3]
-            
-        analisis = json.loads(text_response.strip())
-        
-        # Asegurar que las claves existan
         keys_requeridas = ["categoria", "evento", "porques", "causa_raiz", "actos_sub", "condiciones_sub", "factores_personales", "factores_trabajo", "acciones", "conclusion"]
         for key in keys_requeridas:
             if key not in analisis:
@@ -176,7 +169,6 @@ def predict_sst_analysis(texto_hallazgo):
                     analisis[key] = ["Pendiente por IA"]
                 else:
                     analisis[key] = "Pendiente por IA"
-                    
         return analisis
 
     except Exception as e:
@@ -222,7 +214,6 @@ def load_historial_supabase():
             st.error(f"Error leyendo nube: {e}")
     return pd.DataFrame()
 
-# --- INICIALIZACIÓN DE SESIÓN ---
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.user_data = None
@@ -370,9 +361,9 @@ else:
         if input_type == "📝 Escribir Texto":
             texto_analizar = st.text_area("Describa el evento o condición subestándar:", height=150, placeholder="Ej: Derrame de químico en el pasillo...")
             if st.button("🧠 Generar Investigación") and texto_analizar:
-                if 'resultado_ia' in st.session_state: # LIMPIA ANÁLISIS ANTERIOR
+                if 'resultado_ia' in st.session_state: 
                     del st.session_state.resultado_ia  
-                with st.spinner("Gemini está analizando el evento y aplicando NTC 3701..."):
+                with st.spinner("La IA está analizando el evento y aplicando NTC 3701..."):
                     resultado = predict_sst_analysis(texto_analizar)
                     save_to_supabase("Texto", texto_analizar, resultado)
                     st.session_state.resultado_ia = resultado
@@ -384,28 +375,43 @@ else:
                 image = Image.open(uploaded_file)
                 st.image(image, caption="Imagen Cargada para Análisis", use_column_width=True)
                 if st.button("👁️ Analizar Imagen con IA"):
-                    if 'resultado_ia' in st.session_state: # LIMPIA ANÁLISIS ANTERIOR
+                    if 'resultado_ia' in st.session_state: 
                         del st.session_state.resultado_ia  
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         texto_analizar = ""
                         try:
-                            # NUEVO MÉTODO: Pasar la imagen directamente en memoria (sin archivos temporales)
+                            buffered = io.BytesIO()
+                            image.save(buffered, format="JPEG")
+                            img_str = base64.b64encode(buffered.getvalue()).decode()
+                            
                             prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
                             
-                            # Pasamos el prompt y la imagen directa a Gemini
-                            response_vision = vision_model.generate_content([prompt_vision, image])
-                            
-                            texto_analizar = response_vision.text
+                            chat_completion = client_groq.chat.completions.create(
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": prompt_vision},
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": f"data:image/jpeg;base64,{img_str}"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ],
+                                model="llama-3.2-11b-vision-preview",
+                            )
+                            texto_analizar = chat_completion.choices[0].message.content
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
                                             
                         except Exception as e:
-                            # PLAN B: Modo Colaborativo
-                            st.error(f"🔴 ERROR DE VISIÓN: {e}") # Esto nos mostrará si hay otro error
+                            st.error(f"🔴 ERROR DE VISIÓN: {e}")
                             st.warning("⚠️ La IA de Visión no está disponible. Modo Colaborativo Activado:")
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
                         
-                        # Si tenemos texto, procesamos con el Motor NTC 3701 y guardamos
                         if texto_analizar:
                             with st.spinner("Generando análisis de causa raíz NTC 3701..."):
                                 resultado = predict_sst_analysis(texto_analizar)
@@ -424,8 +430,6 @@ else:
         # --- RENDERIZADO DE RESULTADOS ---
         if 'resultado_ia' in st.session_state:
             resultado = st.session_state.resultado_ia
-            
-            # Botón para limpiar manualmente la pantalla
             st.markdown("---")
             col_limpiar, col_spacer = st.columns([1, 5])
             with col_limpiar:
@@ -467,7 +471,7 @@ else:
             for i, acc in enumerate(resultado.get('acciones', [])):
                 with st.expander(f"✅ Acción {i+1}: {acc.get('titulo', 'Acción')}"):
                     col_obj, col_freq = st.columns(2)
-                    col_obj.markdown(f"**Objetivo**\n\n{acc.get('objectivo', 'N/A')}")
+                    col_obj.markdown(f"**Objetivo**\n\n{acc.get('objetivo', 'N/A')}")
                     col_freq.markdown(f"**Frecuencia:** {acc.get('frecuencia', 'N/A')}\n\n**Responsable:** {acc.get('responsable', 'N/A')}")
                     st.markdown(f"**Actividades**\n\n{acc.get('actividades', 'N/A')}")
             st.markdown("---")
@@ -487,4 +491,4 @@ else:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
                 return output.getvalue()
-            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name='Historial_IA_SST.xlsx', mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name="Historial_IA_SST.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
