@@ -92,8 +92,10 @@ def verify_user(correo, clave, current_ip):
     user = c.fetchone()
     if user and bcrypt.checkpw(clave.encode('utf-8'), user[5].encode('utf-8')):
         user_data = {"cedula": user[0], "nombre": user[1], "correo": user[3], "ip_registro": user[6], "ip_ultimo_acceso": user[7], "fecha_registro": user[8], "aprobado": user[9]}
-        if correo != "dasb1512" and user_data["ip_registro"] != current_ip and user_data["ip_ultimo_acceso"] != current_ip:
-            return None, "⚠️ Advertencia de seguridad: Se detectó un acceso desde un dispositivo/IP diferente. Contacte al administrador."
+        # La validación de IP se desactiva temporalmente para evitar bloqueos en Streamlit Cloud
+        # if correo != "dasb1512" and user_data["ip_registro"] != current_ip and user_data["ip_ultimo_acceso"] != current_ip:
+        #     return None, "⚠️ Advertencia de seguridad: Se detectó un acceso desde un dispositivo/IP diferente. Contacte al administrador."
+
         c.execute("UPDATE users SET ip_ultimo_acceso=? WHERE correo=?", (current_ip, correo))
         conn.commit()
         if not user_data["aprobado"]:
@@ -488,7 +490,9 @@ else:
         
         if not df_ia.empty:
             def to_excel(df):
+                # SOLUCIÓN: Convertir todo a texto plano para evitar errores con xlsxwriter
+                df_str = df.astype(str)
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_str.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
                 return output.getvalue()
             st.download_button(label="📊 Descargar Excel Historial IA", data=to_excel(df_ia), file_name="Historial_IA_SST.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
