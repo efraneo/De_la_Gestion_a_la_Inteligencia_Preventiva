@@ -389,31 +389,18 @@ else:
                     with st.spinner("La IA está observando la imagen y deduciendo el riesgo..."):
                         texto_analizar = ""
                         try:
-                            # 1. Guardar imagen temporalmente
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                                tmp_file.write(uploaded_file.getvalue())
-                                tmp_file_path = tmp_file.name
+                            # NUEVO MÉTODO: Pasar la imagen directamente en memoria (sin archivos temporales)
+                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
                             
-                            # 2. Subir a la API oficial de Google
-                            genai_file = genai.upload_file(path=tmp_file_path, mime_type=uploaded_file.type)
+                            # Pasamos el prompt y la imagen directa a Gemini
+                            response_vision = vision_model.generate_content([prompt_vision, image])
                             
-                            # 3. Esperar procesamiento
-                            while genai_file.state.name == "PROCESSING":
-                                time.sleep(2)
-                                genai_file = genai.get_file(genai_file.name)
-                            
-                            if genai_file.state.name == "FAILED":
-                                raise ValueError("Google no pudo procesar la imagen.")
-                            
-                            # 4. Extraer texto de la imagen
-                            prompt_vision = "Eres un experto en SST. Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves."
-                            response_vision = vision_model.generate_content([prompt_vision, genai_file])
                             texto_analizar = response_vision.text
                             st.info(f"📝 **La IA de Visión detectó:** {texto_analizar}")
-                            os.remove(tmp_file_path)
                                             
                         except Exception as e:
                             # PLAN B: Modo Colaborativo
+                            st.error(f"🔴 ERROR DE VISIÓN: {e}") # Esto nos mostrará si hay otro error
                             st.warning("⚠️ La IA de Visión no está disponible. Modo Colaborativo Activado:")
                             st.info("💡 *Tip: Escribe la condición subestándar que observas (Ej: Silla rota, cable expuesto...)*")
                             texto_analizar = st.text_input("Descripción manual del hallazgo:", key="manual_desc")
@@ -480,7 +467,7 @@ else:
             for i, acc in enumerate(resultado.get('acciones', [])):
                 with st.expander(f"✅ Acción {i+1}: {acc.get('titulo', 'Acción')}"):
                     col_obj, col_freq = st.columns(2)
-                    col_obj.markdown(f"**Objetivo**\n\n{acc.get('objetivo', 'N/A')}")
+                    col_obj.markdown(f"**Objetivo**\n\n{acc.get('objectivo', 'N/A')}")
                     col_freq.markdown(f"**Frecuencia:** {acc.get('frecuencia', 'N/A')}\n\n**Responsable:** {acc.get('responsable', 'N/A')}")
                     st.markdown(f"**Actividades**\n\n{acc.get('actividades', 'N/A')}")
             st.markdown("---")
