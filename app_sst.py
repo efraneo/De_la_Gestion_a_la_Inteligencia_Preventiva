@@ -123,10 +123,10 @@ def register_user(cedula, nombre, fecha_nac, correo, celular, clave, ip):
     c = conn.cursor()
     try:
         hashed_clave = bcrypt.hashpw(clave.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        fecha_venc = datetime.now() + timedelta(days=3)
+        # Por defecto: aprobado=False (Pendiente). No se le asigna fecha de vencimiento aún.
         c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado, fecha_vencimiento) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                  (cedula, nombre, fecha_nac, correo, celular, hashed_clave, ip, ip, datetime.now(), True, fecha_venc))
+                  (cedula, nombre, fecha_nac, correo, celular, hashed_clave, ip, ip, datetime.now(), False, None))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -150,7 +150,7 @@ def verify_user(correo, clave, current_ip):
         
         if correo != "dasb1512":
             if not user_data["aprobado"]:
-                return None, "⏳ Su cuenta no ha sido aprobada por el administrador."
+                return None, "⏳ Su cuenta está pendiente de aprobación por el administrador."
             
             if user_data["fecha_vencimiento"]:
                 try:
@@ -310,17 +310,17 @@ if not st.session_state.authenticated:
     if menu_auth == "Registrarse":
         st.session_state.force_register = False
         with st.form("Registro"):
-            st.markdown("### 📝 Crear Cuenta (Prueba Gratuita 3 Días)")
+            st.markdown("### 📝 Crear Cuenta (Requiere Aprobación)")
             cedula = st.text_input("🔢 Número de Cédula")
             nombre = st.text_input("👤 Nombres Completos")
             fecha_nac = st.date_input("📅 Fecha de Nacimiento", min_value=datetime(1950, 1, 1).date(), max_value=datetime.now().date(), value=datetime(1990, 1, 1).date())
             correo = st.text_input("📧 Correo Electrónico (Será tu usuario)")
             celular = st.text_input("📱 Celular")
             clave = st.text_input("🔒 Clave", type="password")
-            if st.form_submit_button("✍️ Registrarse"):
+            if st.form_submit_button("✍️ Enviar Solicitud de Registro"):
                 if cedula and nombre and correo and clave:
                     success = register_user(cedula, nombre, str(fecha_nac), correo, celular, clave, current_ip)
-                    if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión (Prueba de 3 días activa).")
+                    if success: st.success("✅ Solicitud enviada. Tu cuenta quedará pendiente de aprobación por el administrador.")
                     else: st.error("⚠️ Ya se encuentra registrado. Contacte al administrador.")
                 else: st.warning("Todos los campos son obligatorios.")
     else:
@@ -346,7 +346,6 @@ if not st.session_state.authenticated:
                 if check_user_exists(recover_correo):
                     temp_pass = reset_password(recover_correo)
                     if temp_pass:
-                        # Enviar correo real
                         if send_recovery_email(recover_correo, temp_pass):
                             st.success(f"✅ Se ha enviado un correo a {recover_correo} con tu nueva contraseña temporal.")
                             st.info("Revisa tu bandeja de entrada o spam.")
@@ -397,20 +396,63 @@ else:
     if is_admin: opciones_menu.append("👥 Panel de Administración")
     menu = st.sidebar.radio("Navegación", opciones_menu)
 
-    # --- PANEL ADMIN (SISTEMA SAAS COMPLETO) ---
+    # --- PANEL ADMIN (SISTEMA SAAS COMPLETO CON APROBACIONES) ---
     if menu == "👥 Panel de Administración" and is_admin:
         st.title("👥 Panel de Administración SaaS")
-        st.markdown("Gestión total de usuarios, membresías y permisos.")
+        st.markdown("Centro de control de accesos, aprobaciones y membresías.")
         
         conn = init_users_db()
         
-        st.subheader("📊 Base de Datos de Usuarios")
-        df_users = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_nac, fecha_registro, aprobado, fecha_vencimiento FROM users WHERE correo != 'dasb1512'", conn)
+        # 1. SECCIÓN: APROBACIONES PENDIENTES
+        st.markdown("---")
+        st.subheader("⏳ Aprobaciones Pendientes")
+        
+        df_pending = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_registro FROM users WHERE aprobado = 0 AND correo != 'dasb1512'", conn)
+        
+        col_p1, col_p2 = st.columns([1, 3])
+        with col_p1:
+            st.metric(label="Usuarios por aprobar", value=len(df_pending))
+        
+        if not df_pending.empty:
+            with col_p2:
+                df_pending_display = df_pending.copy()
+                df_pending_display['fecha_registro'] = pd.to_datetime(df_pending_display['fecha_registro']).dt.strftime('%Y-%m-%d %H:%M')
+                df_pending_display = df_pending_display.rename(columns={
+                    'nombre': 'Nombre', 'correo': 'Correo', 'celular': 'Celular', 'fecha_registro': 'Fecha Solicitud'
+                })
+                st.dataframe(df_pending_display[['Nombre', 'Correo', 'Celular', 'Fecha Solicitud']], use_container_width=True, hide_index=True)
+            
+            st.markdown("##### Gestionar Pendiente:")
+            pending_emails = df_pending['correo'].tolist()
+            sel_pending_email = st.selectbox("Selecciona un usuario pendiente:", pending_emails, key="sel_pending")
+            
+            col_appr, col_rej = st.columns(2)
+            if col_appr.button("✅ Aprobar Acceso (Activar 3 Días)"):
+                c = conn.cursor()
+                fecha_venc = datetime.now() + timedelta(days=3)
+                c.execute("UPDATE users SET aprobado=1, fecha_vencimiento=? WHERE correo=?", (fecha_venc, sel_pending_email))
+                conn.commit()
+                st.success(f"✅ Usuario {sel_pending_email} aprobado exitosamente. Membresía de 3 días activada.")
+                st.rerun()
+                
+            if col_rej.button("❌ Rechazar y Eliminar"):
+                c = conn.cursor()
+                c.execute("DELETE FROM users WHERE correo=?", (sel_pending_email,))
+                conn.commit()
+                st.warning(f"🗑️ Usuario {sel_pending_email} rechazado y eliminado del sistema.")
+                st.rerun()
+        else:
+            st.info("✅ No hay usuarios pendientes de aprobación. Todo al día.")
+            
+        # 2. SECCIÓN: USUARIOS ACTIVOS Y MEMBRESÍAS
+        st.markdown("---")
+        st.subheader("📊 Usuarios Activos y Membresías")
+        
+        df_users = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_nac, fecha_registro, aprobado, fecha_vencimiento FROM users WHERE aprobado = 1 AND correo != 'dasb1512'", conn)
         
         if not df_users.empty:
             df_users['fecha_registro'] = pd.to_datetime(df_users['fecha_registro']).dt.strftime('%Y-%m-%d')
             df_users['fecha_vencimiento'] = pd.to_datetime(df_users['fecha_vencimiento']).dt.strftime('%Y-%m-%d')
-            df_users['aprobado'] = df_users['aprobado'].map({True: '✅ Sí', False: '❌ No'})
             df_users = df_users.rename(columns={
                 'cedula': 'Cédula', 'nombre': 'Nombre', 'correo': 'Correo', 'celular': 'Celular',
                 'fecha_nac': 'F. Nacimiento', 'fecha_registro': 'F. Registro', 
@@ -419,12 +461,12 @@ else:
             st.dataframe(df_users, use_container_width=True, hide_index=True)
             
             st.markdown("---")
-            st.subheader("⚙️ Gestión de Usuario")
+            st.subheader("⚙️ Gestión de Usuario Activo")
             col_sel, col_act = st.columns([1, 2])
             
             with col_sel:
                 usuarios_list = df_users['Correo'].tolist()
-                user_sel_email = st.selectbox("Selecciona un usuario para gestionar:", usuarios_list)
+                user_sel_email = st.selectbox("Selecciona un usuario activo para gestionar:", usuarios_list)
             
             if user_sel_email:
                 c = conn.cursor()
@@ -438,7 +480,6 @@ else:
                             with col1:
                                 edit_nombre = st.text_input("Nombre", value=user_data_db[1])
                                 edit_celular = st.text_input("Celular", value=user_data_db[4])
-                                edit_aprobado = st.checkbox("Acceso Aprobado", value=bool(user_data_db[9]))
                             
                             with col2:
                                 venc_str = str(user_data_db[10]).split('.')[0] if user_data_db[10] else None
@@ -453,19 +494,29 @@ else:
                                 edit_vencimiento = st.date_input("Membresía válida hasta:", value=venc_date, min_value=datetime.now().date())
                                 edit_correo = st.text_input("Correo", value=user_data_db[3], disabled=True)
                             
-                            col_btn1, col_btn2 = st.columns(2)
+                            col_btn1, col_btn2, col_btn3 = st.columns(3)
                             submitted = col_btn1.form_submit_button("💾 Guardar Cambios")
-                            delete_btn = col_btn2.form_submit_button("🗑️ Eliminar Usuario")
+                            revoke_btn = col_btn2.form_submit_button("🚫 Revocar Acceso")
+                            delete_btn = col_btn3.form_submit_button("🗑️ Eliminar Usuario")
                             
                             if submitted:
                                 try:
-                                    c.execute("""UPDATE users SET nombre=?, celular=?, aprobado=?, fecha_vencimiento=? WHERE correo=?""", 
-                                              (edit_nombre, edit_celular, edit_aprobado, datetime.combine(edit_vencimiento, datetime.min.time()), user_data_db[3]))
+                                    c.execute("""UPDATE users SET nombre=?, celular=?, fecha_vencimiento=? WHERE correo=?""", 
+                                              (edit_nombre, edit_celular, datetime.combine(edit_vencimiento, datetime.min.time()), user_data_db[3]))
                                     conn.commit()
                                     st.success("✅ Usuario actualizado correctamente.")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error al actualizar: {e}")
+                            
+                            if revoke_btn:
+                                try:
+                                    c.execute("UPDATE users SET aprobado=0 WHERE correo=?", (user_data_db[3],))
+                                    conn.commit()
+                                    st.warning(f"🚫 Acceso revocado a {user_data_db[1]}. Ahora está pendiente de aprobación.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al revocar: {e}")
                             
                             if delete_btn:
                                 try:
@@ -476,7 +527,7 @@ else:
                                 except Exception as e:
                                     st.error(f"Error al eliminar: {e}")
         else:
-            st.info("No hay usuarios registrados además del administrador.")
+            st.info("No hay usuarios activos además del administrador.")
 
     # --- DASHBOARD ---
     elif menu == "📊 Dashboard KPIs":
