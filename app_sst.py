@@ -11,6 +11,9 @@ import uuid
 import bcrypt
 import json
 import base64
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # --- CONFIGURACIÓN DE PÁGINA (DEBE SER LO PRIMERO) ---
 st.set_page_config(page_title="Inteligencia Preventiva SST", page_icon="🛡️", layout="wide")
@@ -19,19 +22,21 @@ st.set_page_config(page_title="Inteligencia Preventiva SST", page_icon="🛡️"
 st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
-    .stButton>button { background-color: #0056b3; color: white; border-radius: 8px; border: none; padding: 10px 24px; }
-    .stButton>button:hover { background-color: #004494; color: white; }
+    .stButton>button { background-color: #0056b3; color: white; border-radius: 8px; border: none; padding: 10px 24px; font-weight: bold; transition: 0.3s; }
+    .stButton>button:hover { background-color: #004494; color: white; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
     .metric-card { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; }
     .kpi-value { font-size: 32px; font-weight: bold; color: #0056b3; }
     .kpi-label { font-size: 14px; color: #6c757d; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXIÓN A LA NUBE (SUPABASE Y GROQ IA) ---
+# --- CONEXIÓN A LA NUBE (SUPABASE, GROQ IA, GMAIL) ---
 try:
     supabase_url = st.secrets["SUPABASE_URL"].rstrip('/')
     supabase_key = st.secrets["SUPABASE_KEY"]
     groq_key = st.secrets["GROQ_API_KEY"] 
+    email_user = st.secrets["EMAIL_ADDRESS"]
+    email_pass = st.secrets["EMAIL_PASSWORD"]
     
     from supabase import create_client, Client
     from groq import Groq
@@ -45,6 +50,42 @@ except Exception as e:
 
 if not os.path.exists("uploads"):
     os.makedirs("uploads")
+
+# --- FUNCIÓN ENVÍO DE CORREO REAL ---
+def send_recovery_email(to_email, temp_pass):
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"Inteligencia Preventiva SST <{email_user}>"
+        msg['To'] = to_email
+        msg['Subject'] = "🛡️ Recuperación de Contraseña - Inteligencia Preventiva SST"
+        
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2 style="color: #0056b3;">Recuperación de Contraseña</h2>
+            <p>Hola,</p>
+            <p>Hemos recibido una solicitud para restablecer tu contraseña en el Ecosistema Inteligente de Hallazgos SST.</p>
+            <p>Tu nueva contraseña temporal es:</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; font-size: 20px; font-weight: bold; color: #0056b3; letter-spacing: 2px;">
+                {temp_pass}
+            </div>
+            <p>Por favor, inicia sesión con esta contraseña y cámbiala lo antes posible desde tu perfil.</p>
+            <br>
+            <p>Saludos cordiales,</p>
+            <p><b>🛡️ Equipo de Seguridad y Salud en el Trabajo</b><br>Ing. Efrain Sarmiento Crespo</p>
+        </div>
+        """
+        part = MIMEText(html_content, 'html')
+        msg.attach(part)
+        
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(email_user, email_pass)
+        server.sendmail(email_user, to_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Error configurando correo: {e}")
+        return False
 
 # --- BASE DE DATOS SQLITE (USUARIOS) ---
 def init_users_db():
@@ -122,6 +163,25 @@ def verify_user(correo, clave, current_ip):
         
         return user_data, "OK"
     return None, "❌ Usuario o clave incorrectos."
+
+def check_user_exists(correo):
+    conn = init_users_db()
+    c = conn.cursor()
+    c.execute("SELECT correo FROM users WHERE correo=?", (correo,))
+    return c.fetchone() is not None
+
+def reset_password(correo):
+    temp_pass = str(uuid.uuid4().hex[:6]).upper()
+    conn = init_users_db()
+    c = conn.cursor()
+    try:
+        hashed_temp = bcrypt.hashpw(temp_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        fecha_venc = datetime.now() + timedelta(days=3)
+        c.execute("UPDATE users SET clave=?, fecha_vencimiento=? WHERE correo=?", (hashed_temp, fecha_venc, correo))
+        conn.commit()
+        return temp_pass
+    except Exception:
+        return None
 
 # --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL Y ESPECÍFICA) ---
 def predict_sst_analysis(texto_hallazgo):
@@ -238,40 +298,81 @@ if 'authenticated' not in st.session_state:
 init_users_db()
 
 # ==========================================
-# PANTALLA DE LOGIN / REGISTRO
+# PANTALLA DE LOGIN / REGISTRO (UX ENTERPRISE)
 # ==========================================
 if not st.session_state.authenticated:
     st.title("🛡️ Inteligencia Preventiva SST - Acceso")
-    menu_auth = st.selectbox("Selecciona una opción", ["Iniciar Sesión", "Registrarse"])
+    
+    default_index = 1 if st.session_state.get("force_register") else 0
+    menu_auth = st.selectbox("Selecciona una opción", ["Iniciar Sesión", "Registrarse"], index=default_index)
     current_ip = get_client_ip()
 
     if menu_auth == "Registrarse":
+        st.session_state.force_register = False
         with st.form("Registro"):
-            st.markdown("### Crear Cuenta (Prueba Gratuita 3 Días)")
-            cedula = st.text_input("Número de Cédula")
-            nombre = st.text_input("Nombres Completos")
-            fecha_nac = st.date_input("Fecha de Nacimiento", min_value=datetime(1950, 1, 1).date(), max_value=datetime.now().date(), value=datetime(1990, 1, 1).date())
-            correo = st.text_input("Correo Electrónico (Será tu usuario)")
-            celular = st.text_input("Celular")
-            clave = st.text_input("Clave", type="password")
-            if st.form_submit_button("Registrarse"):
+            st.markdown("### 📝 Crear Cuenta (Prueba Gratuita 3 Días)")
+            cedula = st.text_input("🔢 Número de Cédula")
+            nombre = st.text_input("👤 Nombres Completos")
+            fecha_nac = st.date_input("📅 Fecha de Nacimiento", min_value=datetime(1950, 1, 1).date(), max_value=datetime.now().date(), value=datetime(1990, 1, 1).date())
+            correo = st.text_input("📧 Correo Electrónico (Será tu usuario)")
+            celular = st.text_input("📱 Celular")
+            clave = st.text_input("🔒 Clave", type="password")
+            if st.form_submit_button("✍️ Registrarse"):
                 if cedula and nombre and correo and clave:
                     success = register_user(cedula, nombre, str(fecha_nac), correo, celular, clave, current_ip)
                     if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión (Prueba de 3 días activa).")
                     else: st.error("⚠️ Ya se encuentra registrado. Contacte al administrador.")
                 else: st.warning("Todos los campos son obligatorios.")
     else:
-        correo = st.text_input("Usuario (Correo)")
-        clave = st.text_input("Clave", type="password")
-        if st.button("Ingresar"):
+        correo = st.text_input("📧 Usuario (Correo)")
+        clave = st.text_input("🔒 Clave", type="password")
+        
+        col_login, col_recover = st.columns([1, 1])
+        login_btn = col_login.button("🚀 Ingresar")
+        recover_btn = col_recover.button("🔑 ¿Olvidaste tu contraseña?")
+
+        if 'show_recover' not in st.session_state:
+            st.session_state.show_recover = False
+            
+        if recover_btn:
+            st.session_state.show_recover = True
+            st.rerun()
+
+        if st.session_state.show_recover:
+            st.markdown("---")
+            st.markdown("#### 🔄 Recuperación de Contraseña")
+            recover_correo = st.text_input("📨 Ingresa tu correo registrado:")
+            if st.button("📧 Enviar Contraseña Temporal al Correo"):
+                if check_user_exists(recover_correo):
+                    temp_pass = reset_password(recover_correo)
+                    if temp_pass:
+                        # Enviar correo real
+                        if send_recovery_email(recover_correo, temp_pass):
+                            st.success(f"✅ Se ha enviado un correo a {recover_correo} con tu nueva contraseña temporal.")
+                            st.info("Revisa tu bandeja de entrada o spam.")
+                            st.session_state.show_recover = False
+                        else:
+                            st.warning("⚠️ No se pudo enviar el correo automáticamente. Para tu demostración, tu contraseña temporal es:")
+                            st.info(f"🔑 Contraseña temporal: **{temp_pass}**")
+                else:
+                    st.error("❌ El correo ingresado no está registrado en el sistema.")
+        
+        if login_btn:
             if correo and clave:
                 user_data, msg = verify_user(correo, clave, current_ip)
                 if user_data:
                     st.session_state.authenticated = True
                     st.session_state.user_data = user_data
                     st.rerun()
-                else: st.error(msg)
-            else: st.warning("Ingresa usuario y clave.")
+                else:
+                    st.error(msg)
+                    if not check_user_exists(correo) and correo:
+                        st.warning("¿Eres nuevo? No encontramos una cuenta con este correo.")
+                        if st.button("📝 ¡Haz clic aquí para registrarte!"):
+                            st.session_state.force_register = True
+                            st.rerun()
+            else:
+                st.warning("Ingresa usuario y clave.")
 
 # ==========================================
 # APLICACIÓN PRINCIPAL (LOGUEADO)
@@ -286,7 +387,7 @@ else:
     else:
         st.sidebar.markdown("👤 Usuario")
     
-    if st.sidebar.button("Cerrar Sesión"):
+    if st.sidebar.button("🚪 Cerrar Sesión"):
         st.session_state.authenticated = False
         st.session_state.user_data = None
         st.rerun()
@@ -394,13 +495,13 @@ else:
         st.markdown("---")
         col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
-            st.subheader("Impacto del Modelo Integrado")
+            st.subheader("📈 Impacto del Modelo Integrado")
             categorias = ['Tiempo Cierre', 'Recurrencia', 'Causa Raíz']
             fig = go.Figure([go.Bar(name='Antes', x=categorias, y=[28, 32, 12], marker_color='#e74c3c'), go.Bar(name='Después', x=categorias, y=[9, 8, 95], marker_color='#2ecc71')])
             fig.update_layout(barmode='group', template='plotly_white')
             st.plotly_chart(fig, width='stretch')
         with col_chart2:
-            st.subheader("Distribución por Factor de Riesgo (IA)")
+            st.subheader("🥧 Distribución por Factor de Riesgo (IA)")
             if not df_ia.empty:
                 cat_counts = df_ia['categoria_detectada'].value_counts().reset_index()
                 cat_counts.columns = ['Categoria', 'Cantidad']
