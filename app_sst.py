@@ -43,7 +43,6 @@ except Exception as e:
     CLOUD_CONNECTED = False
     st.warning(f"⚠️ Configuración de nube incompleta. Funcionando en modo local. Error: {e}")
 
-# --- CREAR CARPETA PARA IMAGENES LOCAL ---
 if not os.path.exists("uploads"):
     os.makedirs("uploads")
 
@@ -53,14 +52,21 @@ def init_users_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (cedula TEXT PRIMARY KEY, nombre TEXT, fecha_nac TEXT, correo TEXT UNIQUE, celular TEXT, 
-                 clave TEXT, ip_registro TEXT, ip_ultimo_acceso TEXT, fecha_registro TIMESTAMP, aprobado BOOLEAN)''')
+                 clave TEXT, ip_registro TEXT, ip_ultimo_acceso TEXT, fecha_registro TIMESTAMP, aprobado BOOLEAN, fecha_vencimiento TIMESTAMP)''')
+    
+    # Actualizar tabla si no tiene la columna fecha_vencimiento (para versiones anteriores)
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN fecha_vencimiento TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass # Ya existe la columna
+    
     admin_user = "dasb1512"
     c.execute("SELECT * FROM users WHERE correo=?", (admin_user,))
     if not c.fetchone():
         hashed_clave = bcrypt.hashpw("cocolizo76".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                  ('0000000', 'Administrador SST', '1990-01-01', admin_user, '3000000000', hashed_clave, '0.0.0.0', '0.0.0.0', datetime.now(), True))
+        c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado, fecha_vencimiento) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                  ('0000000', 'Administrador SST', '1990-01-01', admin_user, '3000000000', hashed_clave, '0.0.0.0', '0.0.0.0', datetime.now(), True, datetime(2099, 12, 31)))
     conn.commit()
     return conn
 
@@ -77,9 +83,11 @@ def register_user(cedula, nombre, fecha_nac, correo, celular, clave, ip):
     c = conn.cursor()
     try:
         hashed_clave = bcrypt.hashpw(clave.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                  (cedula, nombre, fecha_nac, correo, celular, hashed_clave, ip, ip, datetime.now(), False))
+        # Fecha de vencimiento por defecto: 3 días (Trial)
+        fecha_venc = datetime.now() + timedelta(days=3)
+        c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado, fecha_vencimiento) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                  (cedula, nombre, fecha_nac, correo, celular, hashed_clave, ip, ip, datetime.now(), True, fecha_venc))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -91,65 +99,74 @@ def verify_user(correo, clave, current_ip):
     c.execute("SELECT * FROM users WHERE correo=?", (correo,))
     user = c.fetchone()
     if user and bcrypt.checkpw(clave.encode('utf-8'), user[5].encode('utf-8')):
-        user_data = {"cedula": user[0], "nombre": user[1], "correo": user[3], "ip_registro": user[6], "ip_ultimo_acceso": user[7], "fecha_registro": user[8], "aprobado": user[9]}
-        # La validación de IP se desactiva temporalmente para evitar bloqueos en Streamlit Cloud
-        # if correo != "dasb1512" and user_data["ip_registro"] != current_ip and user_data["ip_ultimo_acceso"] != current_ip:
-        #     return None, "⚠️ Advertencia de seguridad: Se detectó un acceso desde un dispositivo/IP diferente. Contacte al administrador."
-
+        user_data = {
+            "cedula": user[0], "nombre": user[1], "correo": user[3], 
+            "ip_registro": user[6], "ip_ultimo_acceso": user[7], 
+            "fecha_registro": user[8], "aprobado": user[9],
+            "fecha_vencimiento": user[10] if len(user) > 10 else None
+        }
+        
         c.execute("UPDATE users SET ip_ultimo_acceso=? WHERE correo=?", (current_ip, correo))
         conn.commit()
-        if not user_data["aprobado"]:
-            fecha_reg = datetime.strptime(user_data["fecha_registro"].split('.')[0], "%Y-%m-%d %H:%M:%S")
-            if datetime.now() > fecha_reg + timedelta(days=3):
-                return None, "⏳ Su prueba gratuita de 3 días ha terminado. Comuníquese con ing.efrainsarmientoc@outlook.es."
+        
+        # Si no es admin, validar fecha de vencimiento
+        if correo != "dasb1512":
+            if not user_data["aprobado"]:
+                return None, "⏳ Su cuenta no ha sido aprobada por el administrador."
+            
+            if user_data["fecha_vencimiento"]:
+                try:
+                    fecha_venc_str = str(user_data["fecha_vencimiento"]).split('.')[0]
+                    fecha_venc = datetime.strptime(fecha_venc_str, "%Y-%m-%d %H:%M:%S")
+                    if datetime.now() > fecha_venc:
+                        return None, "⏳ Su membresía ha expirado. Comuníquese con ing.efrainsarmientoc@outlook.es para renovar."
+                except:
+                    pass # Si hay error parseando la fecha, deja pasar
+        
         return user_data, "OK"
     return None, "❌ Usuario o clave incorrectos."
 
-# --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL CON GROQ) ---
+# --- MOTOR DE IA PREDICTIVA (NTC 3701 - 100% REAL Y ESPECÍFICA) ---
 def predict_sst_analysis(texto_hallazgo):
     prompt_ia = f"""
-    Actúa como un Auditor Experto en Seguridad y Salud en el Trabajo (SST), especialista en la normativa NTC 3701 y en la metodología de los 5 Por Qué.
+    Eres un Auditor Experto en Seguridad y Salud en el Trabajo (SST), especialista en la normativa NTC 3701 y la metodología de los 5 Por Qué.
+    
+    CONTEXTO: Te están reportando una CONDICIÓN SUBESTÁNDAR o un ACTO SUBESTÁNDAR detectado durante una inspección de rutina, NO un accidente de trabajo. 
+    Hallazgo reportado: "{texto_hallazgo}"
 
-    Analiza el siguiente evento o condición subestándar reportado en una empresa: "{texto_hallazgo}"
-
-    Tu tarea es realizar una investigación exhaustiva y generar un análisis estructurado. Debes seguir EXACTAMENTE este formato JSON. No agregues texto fuera del JSON.
-    Asegúrate de utilizar códigos y terminología real de la NTC 3701 para las causas inmediatas y básicas.
+    INSTRUCCIONES ESTRICTAS:
+    1. Analiza profundamente el hallazgo. 
+    2. Las preguntas y respuestas de los "5 Por Qué" deben ser TOTALMENTE ESPECÍFICAS a este hallazgo. Prohibido usar respuestas genéricas. Formula la pregunta basada en la respuesta anterior.
+    3. La Causa Raíz debe ser una conclusión técnica, organizacional o de gestión muy específica derivada de tu análisis.
+    4. Para la NTC 3701, selecciona los códigos EXACTOS que apliquen estrictamente a este hallazgo. No pongas ejemplos genéricos, usa los códigos reales de la norma.
+    5. Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura exacta:
 
     {{
-      "categoria": "Clasificación principal del riesgo (Ej: Riesgo Eléctrico, Mobiliario/Ergonomía, Infraestructura/Locativo, Biológico, Mecánico, etc.)",
-      "evento": "Descripción capitalizada y profesional del evento proporcionado",
+      "categoria": "Clasificación principal del riesgo basada en el hallazgo",
+      "evento": "Descripción técnica y profesional del hallazgo",
       "porques": [
-        "¿Por qué ocurrió el evento? -> [Respuesta lógica basada en el evento]",
-        "¿Por qué sucedió la respuesta anterior? -> [Profundización]",
-        "¿Por qué se generó esa situación? -> [Profundización en gestión]",
-        "¿Por qué no se detectó o previno? -> [Falla en el sistema de control]",
-        "¿Por qué existe esa falla en el sistema? -> [Causa raíz organizacional]"
+        "Pregunta 1 específica al hallazgo -> Respuesta 1 lógica y específica",
+        "Pregunta 2 derivada de la respuesta 1 -> Respuesta 2 específica",
+        "Pregunta 3 derivada de la respuesta 2 -> Respuesta 3 específica",
+        "Pregunta 4 derivada de la respuesta 3 -> Respuesta 4 específica",
+        "Pregunta 5 derivada de la respuesta 4 (Causa raíz) -> Respuesta 5 específica"
       ],
-      "causa_raiz": "Enunciado claro y conciso de la causa raíz identificada tras el análisis de los 5 Por Qué.",
-      "actos_sub": ["Código y nombre real de NTC 3701 de Actos subestándar aplicables (Ej: 550 - Adoptar posición insegura)"],
-      "condiciones_sub": ["Código y nombre real de NTC 3701 de Condiciones subestándar aplicables (Ej: 035 - Desgastado, roto; 510 - Riesgo eléctrico)"],
-      "factores_personales": ["Código y nombre real de NTC 3701 (Ej: 998 - Ningún factor personal relevante, o el que aplique)"],
-      "factores_trabajo": ["Código y nombre real de NTC 3701 (Ej: 300 - Mantenimiento deficiente; 000 - Supervisión deficiente)"],
+      "causa_raiz": "Enunciado contundente y específico de la causa raíz.",
+      "actos_sub": ["Código - Nombre exacto NTC 3701 (si aplica, si no, 'No aplica')"],
+      "condiciones_sub": ["Código - Nombre exacto NTC 3701"],
+      "factores_personales": ["Código - Nombre exacto NTC 3701 (si aplica)"],
+      "factores_trabajo": ["Código - Nombre exacto NTC 3701"],
       "acciones": [
         {{
-          "titulo": "Nombre de la acción correctiva o preventiva",
-          "objetivo": "Qué se busca lograr con esta acción",
-          "actividades": "Paso a paso de la actividad (separado por saltos de línea \\n)",
-          "responsable": "Área o rol responsable",
-          "frecuencia": "Frecuencia de ejecución (Ej: Inmediata, Mensual, Trimestral)"
-        }},
-        {{
-          "titulo": "Nombre de la segunda acción (preventiva)",
-          "objetivo": "Qué se busca lograr",
-          "actividades": "Paso a paso",
-          "responsable": "Área o rol",
-          "frecuencia": "Frecuencia"
+          "titulo": "Acción Correctiva/Preventiva específica al hallazgo",
+          "objetivo": "Objetivo claro de la acción",
+          "actividades": "Paso 1\\nPaso 2\\nPaso 3",
+          "responsable": "Área o cargo responsable",
+          "frecuencia": "Frecuencia real (Inmediata, Mensual, etc.)"
         }}
       ],
-      "conclusion": "Conclusión técnica profesional que relaciona el evento con la causa raíz y el factor predominante (Organizacional, Humano, Técnico)."
+      "conclusion": "Conclusión técnica que relaciona el hallazgo con la causa raíz."
     }}
-
-    Genera SOLO un objeto JSON válido y nada más.
     """
 
     try:
@@ -157,7 +174,7 @@ def predict_sst_analysis(texto_hallazgo):
             messages=[{"role": "user", "content": prompt_ia}],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"},
-            temperature=0.3,
+            temperature=0.6,
         )
         text_response = chat_completion.choices[0].message.content.strip()
         analisis = json.loads(text_response)
@@ -242,7 +259,7 @@ if not st.session_state.authenticated:
             if st.form_submit_button("Registrarse"):
                 if cedula and nombre and correo and clave:
                     success = register_user(cedula, nombre, str(fecha_nac), correo, celular, clave, current_ip)
-                    if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión.")
+                    if success: st.success("✅ Registro exitoso. Ya puedes iniciar sesión (Prueba de 3 días activa).")
                     else: st.error("⚠️ Ya se encuentra registrado. Contacte al administrador.")
                 else: st.warning("Todos los campos son obligatorios.")
     else:
@@ -269,8 +286,7 @@ else:
     if is_admin:
         st.sidebar.markdown("🛡️ Administrador")
     else:
-        dias_restantes = 3 - (datetime.now() - datetime.strptime(user['fecha_registro'].split('.')[0], "%Y-%m-%d %H:%M:%S")).days
-        st.sidebar.markdown(f"⏳ Días gratis restantes: **{max(0, dias_restantes)}**")
+        st.sidebar.markdown("👤 Usuario")
     
     if st.sidebar.button("Cerrar Sesión"):
         st.session_state.authenticated = False
@@ -282,33 +298,90 @@ else:
     if is_admin: opciones_menu.append("👥 Panel de Administración")
     menu = st.sidebar.radio("Navegación", opciones_menu)
 
-    # --- PANEL ADMIN ---
+    # --- PANEL ADMIN (SISTEMA SAAS COMPLETO) ---
     if menu == "👥 Panel de Administración" and is_admin:
-        st.title("👥 Panel de Administración")
+        st.title("👥 Panel de Administración SaaS")
+        st.markdown("Gestión total de usuarios, membresías y permisos.")
+        
         conn = init_users_db()
-        df_users = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_registro, aprobado FROM users WHERE correo != 'dasb1512'", conn)
+        
+        # 1. TABLA COMPLETA DE USUARIOS
+        st.subheader("📊 Base de Datos de Usuarios")
+        df_users = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_nac, fecha_registro, aprobado, fecha_vencimiento FROM users WHERE correo != 'dasb1512'", conn)
+        
         if not df_users.empty:
-            for index, row in df_users.iterrows():
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 1, 1])
-                    with col1:
-                        estado = "✅ Aprobado" if row['aprobado'] else "⏳ Trial/Bloqueado"
-                        st.write(f"**{row['nombre']}** - {row['correo']} | Estado: {estado}")
-                    with col2:
-                        if not row['aprobado']:
-                            if st.button("Aprobar Acceso", key=row['cedula']):
-                                c = conn.cursor()
-                                c.execute("UPDATE users SET aprobado=1 WHERE cedula=?", (row['cedula'],))
-                                conn.commit()
-                                st.success(f"Usuario {row['nombre']} aprobado."); st.rerun()
-                    with col3:
-                        if row['aprobado']:
-                            if st.button("Revocar Acceso", key=f"rev_{row['cedula']}"):
-                                c = conn.cursor()
-                                c.execute("UPDATE users SET aprobado=0 WHERE cedula=?", (row['cedula'],))
-                                conn.commit()
-                                st.warning(f"Acceso de {row['nombre']} revocado."); st.rerun()
-        else: st.info("No hay usuarios registrados además del administrador.")
+            # Formatear fechas para visualización
+            df_users['fecha_registro'] = pd.to_datetime(df_users['fecha_registro']).dt.strftime('%Y-%m-%d')
+            df_users['fecha_vencimiento'] = pd.to_datetime(df_users['fecha_vencimiento']).dt.strftime('%Y-%m-%d')
+            df_users['aprobado'] = df_users['aprobado'].map({True: '✅ Sí', False: '❌ No'})
+            df_users = df_users.rename(columns={
+                'cedula': 'Cédula', 'nombre': 'Nombre', 'correo': 'Correo', 'celular': 'Celular',
+                'fecha_nac': 'F. Nacimiento', 'fecha_registro': 'F. Registro', 
+                'aprobado': 'Aprobado', 'fecha_vencimiento': 'Vence Membresía'
+            })
+            st.dataframe(df_users, use_container_width=True, hide_index=True)
+            
+            # 2. GESTIÓN INDIVIDUAL (CRUD)
+            st.markdown("---")
+            st.subheader("⚙️ Gestión de Usuario")
+            col_sel, col_act = st.columns([1, 2])
+            
+            with col_sel:
+                usuarios_list = df_users['Correo'].tolist()
+                user_sel_email = st.selectbox("Selecciona un usuario para gestionar:", usuarios_list)
+            
+            if user_sel_email:
+                c = conn.cursor()
+                c.execute("SELECT * FROM users WHERE correo=?", (user_sel_email,))
+                user_data_db = c.fetchone()
+                
+                if user_data_db:
+                    with col_act:
+                        with st.form(f"edit_form_{user_data_db[0]}"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                edit_nombre = st.text_input("Nombre", value=user_data_db[1])
+                                edit_celular = st.text_input("Celular", value=user_data_db[4])
+                                edit_aprobado = st.checkbox("Acceso Aprobado", value=bool(user_data_db[9]))
+                            
+                            with col2:
+                                # Calcular fecha de vencimiento actual
+                                venc_str = str(user_data_db[10]).split('.')[0] if user_data_db[10] else None
+                                if venc_str:
+                                    try:
+                                        venc_date = datetime.strptime(venc_str, "%Y-%m-%d %H:%M:%S").date()
+                                    except:
+                                        venc_date = datetime.now().date() + timedelta(days=30)
+                                else:
+                                    venc_date = datetime.now().date() + timedelta(days=30)
+                                
+                                edit_vencimiento = st.date_input("Membresía válida hasta:", value=venc_date, min_value=datetime.now().date())
+                                edit_correo = st.text_input("Correo", value=user_data_db[3], disabled=True)
+                            
+                            col_btn1, col_btn2 = st.columns(2)
+                            submitted = col_btn1.form_submit_button("💾 Guardar Cambios")
+                            delete_btn = col_btn2.form_submit_button("🗑️ Eliminar Usuario")
+                            
+                            if submitted:
+                                try:
+                                    c.execute("""UPDATE users SET nombre=?, celular=?, aprobado=?, fecha_vencimiento=? WHERE correo=?""", 
+                                              (edit_nombre, edit_celular, edit_aprobado, datetime.combine(edit_vencimiento, datetime.min.time()), user_data_db[3]))
+                                    conn.commit()
+                                    st.success("✅ Usuario actualizado correctamente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al actualizar: {e}")
+                            
+                            if delete_btn:
+                                try:
+                                    c.execute("DELETE FROM users WHERE correo=?", (user_data_db[3],))
+                                    conn.commit()
+                                    st.success(f"🗑️ Usuario {user_data_db[1]} eliminado correctamente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al eliminar: {e}")
+        else:
+            st.info("No hay usuarios registrados además del administrador.")
 
     # --- DASHBOARD ---
     elif menu == "📊 Dashboard KPIs":
@@ -361,11 +434,11 @@ else:
         texto_analizar = ""
 
         if input_type == "📝 Escribir Texto":
-            texto_analizar = st.text_area("Describa el evento o condición subestándar:", height=150, placeholder="Ej: Derrame de químico en el pasillo...")
+            texto_analizar = st.text_area("Describa la condición o acto subestándar:", height=150, placeholder="Ej: Cableado eléctrico expuesto en área de tránsito...")
             if st.button("🧠 Generar Investigación") and texto_analizar:
                 if 'resultado_ia' in st.session_state: 
                     del st.session_state.resultado_ia  
-                with st.spinner("La IA está analizando el evento y aplicando NTC 3701..."):
+                with st.spinner("La IA está analizando el hallazgo y aplicando NTC 3701..."):
                     resultado = predict_sst_analysis(texto_analizar)
                     save_to_supabase("Texto", texto_analizar, resultado)
                     st.session_state.resultado_ia = resultado
@@ -386,7 +459,7 @@ else:
                             image.save(buffered, format="JPEG")
                             img_str = base64.b64encode(buffered.getvalue()).decode()
                             
-                            prompt_vision = "Eres un experto en Seguridad y Salud en el Trabajo (SST). Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
+                            prompt_vision = "Eres un experto en SST. Observa esta imagen. Describe en 1 oración concisa la condición subestándar que ves (enfócate en: mobiliario, eléctrico, humedad u obstáculo)."
                             
                             chat_completion = client_groq.chat.completions.create(
                                 messages=[
@@ -429,7 +502,6 @@ else:
                                 except Exception as e:
                                     st.error(f"Error guardando en la nube: {e}")
 
-        # --- RENDERIZADO DE RESULTADOS ---
         if 'resultado_ia' in st.session_state:
             resultado = st.session_state.resultado_ia
             st.markdown("---")
@@ -442,7 +514,7 @@ else:
             st.success("✅ Análisis Generado y Guardado en la Nube!")
             
             st.markdown("## 1. Análisis de causas – Método de los Cinco Por Qué")
-            st.markdown(f"**Evento:** {resultado.get('evento', 'N/A')}")
+            st.markdown(f"**Hallazgo:** {resultado.get('evento', 'N/A')}")
             porques = resultado.get('porques', [])
             for p in porques: 
                 if p and p != "Pendiente por IA": st.markdown(f"**{p}**")
@@ -481,9 +553,6 @@ else:
             st.markdown("## 5. Conclusión técnica")
             st.success(f"✔️ {resultado.get('conclusion', 'N/A')}")
 
-# --- Nuevas filas
-
-
     # --- EXPORTAR DATOS ---
     elif menu == "📁 Exportar Datos":
         st.title("📥 Exportación de Información Estratégica")
@@ -493,7 +562,6 @@ else:
         
         if not df_ia.empty:
             def to_excel(df):
-                # SOLUCIÓN: Convertir todo a texto plano para evitar errores con xlsxwriter
                 df_str = df.astype(str)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_str.to_excel(writer, index=False, sheet_name='Historial_IA_Nube')
