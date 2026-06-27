@@ -54,11 +54,10 @@ def init_users_db():
                  (cedula TEXT PRIMARY KEY, nombre TEXT, fecha_nac TEXT, correo TEXT UNIQUE, celular TEXT, 
                  clave TEXT, ip_registro TEXT, ip_ultimo_acceso TEXT, fecha_registro TIMESTAMP, aprobado BOOLEAN, fecha_vencimiento TIMESTAMP)''')
     
-    # Actualizar tabla si no tiene la columna fecha_vencimiento (para versiones anteriores)
     try:
         c.execute("ALTER TABLE users ADD COLUMN fecha_vencimiento TIMESTAMP")
     except sqlite3.OperationalError:
-        pass # Ya existe la columna
+        pass 
     
     admin_user = "dasb1512"
     c.execute("SELECT * FROM users WHERE correo=?", (admin_user,))
@@ -83,7 +82,6 @@ def register_user(cedula, nombre, fecha_nac, correo, celular, clave, ip):
     c = conn.cursor()
     try:
         hashed_clave = bcrypt.hashpw(clave.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        # Fecha de vencimiento por defecto: 3 días (Trial)
         fecha_venc = datetime.now() + timedelta(days=3)
         c.execute("""INSERT INTO users (cedula, nombre, fecha_nac, correo, celular, clave, ip_registro, ip_ultimo_acceso, fecha_registro, aprobado, fecha_vencimiento) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
@@ -109,7 +107,6 @@ def verify_user(correo, clave, current_ip):
         c.execute("UPDATE users SET ip_ultimo_acceso=? WHERE correo=?", (current_ip, correo))
         conn.commit()
         
-        # Si no es admin, validar fecha de vencimiento
         if correo != "dasb1512":
             if not user_data["aprobado"]:
                 return None, "⏳ Su cuenta no ha sido aprobada por el administrador."
@@ -121,7 +118,7 @@ def verify_user(correo, clave, current_ip):
                     if datetime.now() > fecha_venc:
                         return None, "⏳ Su membresía ha expirado. Comuníquese con ing.efrainsarmientoc@outlook.es para renovar."
                 except:
-                    pass # Si hay error parseando la fecha, deja pasar
+                    pass 
         
         return user_data, "OK"
     return None, "❌ Usuario o clave incorrectos."
@@ -136,22 +133,23 @@ def predict_sst_analysis(texto_hallazgo):
 
     INSTRUCCIONES ESTRICTAS:
     1. Analiza profundamente el hallazgo. 
-    2. Las preguntas y respuestas de los "5 Por Qué" deben ser TOTALMENTE ESPECÍFICAS a este hallazgo. Prohibido usar respuestas genéricas. Formula la pregunta basada en la respuesta anterior.
-    3. La Causa Raíz debe ser una conclusión técnica, organizacional o de gestión muy específica derivada de tu análisis.
-    4. Para la NTC 3701, selecciona los códigos EXACTOS que apliquen estrictamente a este hallazgo. No pongas ejemplos genéricos, usa los códigos reales de la norma.
-    5. Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura exacta:
+    2. REGLA CRÍTICA DE LOS 5 POR QUÉ: La lista "porques" DEBE contener EXACTAMENTE 5 elementos. Prohibido entregar menos de 5. Si crees que encontraste la causa raíz en el paso 3, DEBES continuar profundizando en los pasos 4 y 5 preguntando sobre fallas en el sistema de gestión, cultura organizacional, falta de asignación de recursos o debilidades en el SG-SST.
+    3. Las preguntas y respuestas deben ser TOTALMENTE ESPECÍFICAS a este hallazgo. Formula la pregunta basada en la respuesta anterior.
+    4. La Causa Raíz debe ser una conclusión técnica, organizacional o de gestión muy específica derivada de tu análisis.
+    5. Para la NTC 3701, selecciona los códigos EXACTOS que apliquen estrictamente a este hallazgo. No pongas ejemplos genéricos, usa los códigos reales de la norma.
+    6. Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura exacta:
 
     {{
       "categoria": "Clasificación principal del riesgo basada en el hallazgo",
       "evento": "Descripción técnica y profesional del hallazgo",
       "porques": [
-        "Pregunta 1 específica al hallazgo -> Respuesta 1 lógica y específica",
-        "Pregunta 2 derivada de la respuesta 1 -> Respuesta 2 específica",
-        "Pregunta 3 derivada de la respuesta 2 -> Respuesta 3 específica",
-        "Pregunta 4 derivada de la respuesta 3 -> Respuesta 4 específica",
-        "Pregunta 5 derivada de la respuesta 4 (Causa raíz) -> Respuesta 5 específica"
+        "1. ¿Por qué ocurrió la condición subestándar? -> [Respuesta específica]",
+        "2. ¿Por qué sucedió lo anterior? -> [Respuesta específica]",
+        "3. ¿Por qué se generó esa situación? -> [Respuesta específica]",
+        "4. ¿Por qué no se detectó o previno por el sistema de gestión? -> [Respuesta específica]",
+        "5. ¿Por qué existe esa falla en el sistema o cultura organizacional? -> [Respuesta específica que revela la causa raíz]"
       ],
-      "causa_raiz": "Enunciado contundente y específico de la causa raíz.",
+      "causa_raiz": "Enunciado contundente y específico de la causa raíz derivada del paso 5.",
       "actos_sub": ["Código - Nombre exacto NTC 3701 (si aplica, si no, 'No aplica')"],
       "condiciones_sub": ["Código - Nombre exacto NTC 3701"],
       "factores_personales": ["Código - Nombre exacto NTC 3701 (si aplica)"],
@@ -305,12 +303,10 @@ else:
         
         conn = init_users_db()
         
-        # 1. TABLA COMPLETA DE USUARIOS
         st.subheader("📊 Base de Datos de Usuarios")
         df_users = pd.read_sql_query("SELECT cedula, nombre, correo, celular, fecha_nac, fecha_registro, aprobado, fecha_vencimiento FROM users WHERE correo != 'dasb1512'", conn)
         
         if not df_users.empty:
-            # Formatear fechas para visualización
             df_users['fecha_registro'] = pd.to_datetime(df_users['fecha_registro']).dt.strftime('%Y-%m-%d')
             df_users['fecha_vencimiento'] = pd.to_datetime(df_users['fecha_vencimiento']).dt.strftime('%Y-%m-%d')
             df_users['aprobado'] = df_users['aprobado'].map({True: '✅ Sí', False: '❌ No'})
@@ -321,7 +317,6 @@ else:
             })
             st.dataframe(df_users, use_container_width=True, hide_index=True)
             
-            # 2. GESTIÓN INDIVIDUAL (CRUD)
             st.markdown("---")
             st.subheader("⚙️ Gestión de Usuario")
             col_sel, col_act = st.columns([1, 2])
@@ -345,7 +340,6 @@ else:
                                 edit_aprobado = st.checkbox("Acceso Aprobado", value=bool(user_data_db[9]))
                             
                             with col2:
-                                # Calcular fecha de vencimiento actual
                                 venc_str = str(user_data_db[10]).split('.')[0] if user_data_db[10] else None
                                 if venc_str:
                                     try:
